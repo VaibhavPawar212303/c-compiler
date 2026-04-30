@@ -156,6 +156,9 @@ export default function MemoryArchitect() {
   const [isMounted, setIsMounted] = useState(false);
   const [pointerLinks, setPointerLinks] = useState<{fromId: string, toId: string, color: string}[]>([]);
   const [isAutoStepping, setIsAutoStepping] = useState(false);
+  const [isAwaitingInput, setIsAwaitingInput] = useState(false);
+  const [userInput, setUserInput] = useState("");
+  const [inputTarget, setInputTarget] = useState<{name: string, type: string} | null>(null);
   const [code, setCode] = useState(`int main() {
   struct book {
     int bookPage;
@@ -163,11 +166,9 @@ export default function MemoryArchitect() {
   };
 
   struct book b1;
-  b1.bookPage = 42;
-
-  int *ptr = malloc(8);
-  free(ptr);
-
+  printf("Enter the value for book pages: ");
+  scanf("%d", &b1.bookPage);
+  
   return 0;
 }`);
   const [currentLine, setCurrentLine] = useState(-1);
@@ -292,7 +293,44 @@ export default function MemoryArchitect() {
         setStatusMessage("FREE: Memory block marked as available in Heap pool.");
       }
     }
-    // 7. Return
+    // 7. Printf
+    else if (line.startsWith('printf')) {
+      const match = line.match(/printf\("([^"]+)"(?:,\s*(.+))?\)/);
+      if (match) {
+        let content = match[1];
+        const args = match[2] ? match[2].split(',').map(s => s.trim()) : [];
+        
+        args.forEach(arg => {
+          // Simplistic variable lookup for printf
+          const currentFrame = stack[stack.length - 1];
+          const v = currentFrame?.variables.find(v => v.name === arg || (arg.includes('.') && v.name === arg.split('.')[0]));
+          if (v) {
+            let val = v.value;
+            if (arg.includes('.')) {
+              const member = arg.split('.')[1];
+              const memberMatch = v.value.match(new RegExp(`${member}:\\s*([^,}]+)`));
+              val = memberMatch ? memberMatch[1] : '???';
+            }
+            content = content.replace(/%d|%s|%c/, val);
+          }
+        });
+        
+        setStatusMessage(`STDOUT: "${content}"`);
+      }
+    }
+    // 8. Scanf
+    else if (line.startsWith('scanf')) {
+      const match = line.match(/scanf\("[^"]+",\s*&?([\w\.]+)\)/);
+      if (match) {
+        const varName = match[1];
+        setInputTarget({ name: varName, type: 'int' });
+        setIsAwaitingInput(true);
+        setIsAutoStepping(false);
+        setStatusMessage(`WAIT_INPUT: Kernel requesting data for '${varName}'...`);
+        return; // Don't advance line until input is provided
+      }
+    }
+    // 9. Return
     else if (line.startsWith('return')) {
       const retVal = line.match(/return\s+(.+)/)?.[1];
       const currentFrame = stack[stack.length - 1];
@@ -308,7 +346,7 @@ export default function MemoryArchitect() {
         setStatusMessage(`EXIT: Function returned ${retVal || ''}. Stack shrunk.`);
       }
     }
-    // 8. Scope End
+    // 10. Scope End
     else if (line === '}') {
       if (stack.length > 0) {
         popFrame();
@@ -317,6 +355,20 @@ export default function MemoryArchitect() {
     }
 
     setCurrentLine(prev => prev + 1);
+  };
+
+  const handleInputSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputTarget) return;
+    
+    updateOrAddVariable(inputTarget.name, userInput);
+    setStatusMessage(`INPUT: Read value '${userInput}' into '${inputTarget.name}'. Execution resuming...`);
+    
+    setIsAwaitingInput(false);
+    setUserInput("");
+    setInputTarget(null);
+    setCurrentLine(prev => prev + 1);
+    setIsAutoStepping(true);
   };
 
   const updateOrAddVariable = (name: string, value: string, type: 'value' | 'pointer' | 'struct' = 'value') => {
@@ -589,6 +641,43 @@ export default function MemoryArchitect() {
                       transition={{ type: "spring", stiffness: 300, damping: 30 }}
                     />
                   )}
+                  {/* Scanf Input Overlay */}
+                  <AnimatePresence>
+                    {isAwaitingInput && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="absolute inset-0 bg-black/80 backdrop-blur-md z-40 flex items-center justify-center p-6"
+                      >
+                        <form onSubmit={handleInputSubmit} className="w-full max-w-[240px] space-y-4">
+                          <div className="text-center">
+                            <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest mb-1 italic">Scanf_Request</p>
+                            <p className="text-white text-xs font-mono">Kernel is waiting for <span className="text-blue-400">'{inputTarget?.name}'</span></p>
+                          </div>
+                          <div className="relative">
+                            <input 
+                              autoFocus
+                              type="text"
+                              value={userInput}
+                              onChange={(e) => setUserInput(e.target.value)}
+                              placeholder="Type value..."
+                              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-emerald-400 font-mono text-sm focus:outline-none focus:border-blue-500/50 transition-all placeholder:text-slate-700"
+                            />
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-30 text-emerald-400">
+                              <Zap size={14} />
+                            </div>
+                          </div>
+                          <button 
+                            type="submit"
+                            className="w-full py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-blue-500 transition-colors shadow-[0_0_20px_rgba(37,99,235,0.3)] group flex items-center justify-center gap-2"
+                          >
+                            Send to Kernel <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
+                          </button>
+                        </form>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
                 <div className="p-3 bg-black/60 border-t border-white/5 text-[9px] text-slate-500 flex justify-between items-center italic">
                   <span>Target: x86_64_Kernel</span>
