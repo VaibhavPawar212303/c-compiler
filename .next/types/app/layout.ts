@@ -1,4 +1,4 @@
-// File: /home/vaibhav/Documents/memory-architect_-stack-vs-heap/app/layout.tsx
+// File: /home/vaibhav/Documents/memory-architect_-stack-vs-heap/c-compiler/app/layout.tsx
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
