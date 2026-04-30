@@ -1,0 +1,6 @@
+{
+  "name": "Memory Architect: Stack vs Heap",
+  "description": "An interactive educational tool visualizing the Workbench (Stack) and Warehouse (Heap) memory models using the remote-control analogy.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
