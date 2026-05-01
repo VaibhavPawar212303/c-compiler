@@ -22,6 +22,7 @@ export interface HeapObject {
   type: 'struct' | 'array' | 'image';
   color: string;
   address: string;
+  value: string;
 }
 
 export interface PointerLink {

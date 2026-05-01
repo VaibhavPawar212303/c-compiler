@@ -66,7 +66,7 @@ const CodeEditor = ({
           
           <button 
             onClick={() => { setIsAutoStepping(false); stepCode(); }}
-            disabled={currentLine === -1 || currentLine >= code.split('\n').length}
+            disabled={currentLine >= code.split('\n').length}
             className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/20 text-blue-400 border border-blue-500/40 rounded-xl hover:bg-blue-500/30 transition-all disabled:opacity-20 group/step shadow-lg"
             title="Step Over (F10)"
           >

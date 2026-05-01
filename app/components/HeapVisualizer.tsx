@@ -12,7 +12,7 @@ interface HeapVisualizerProps {
 
 const HeapVisualizer = ({ heap, freeHeap }: HeapVisualizerProps) => {
   return (
-    <div className="lg:col-span-12 xl:col-span-4 flex flex-col">
+    <div className="lg:col-span-4 flex flex-col">
       <div className="bg-white/[0.02] border border-white/10 rounded-3xl h-[750px] flex flex-col overflow-hidden backdrop-blur-md shadow-2xl">
         <div className="p-5 border-b border-white/5 flex items-center justify-between bg-white/[0.01]">
            <span className="flex items-center gap-3 text-sm font-bold text-white tracking-widest">
@@ -53,6 +53,38 @@ const HeapVisualizer = ({ heap, freeHeap }: HeapVisualizerProps) => {
                       <span className="text-[10px] font-mono text-slate-300 font-bold tracking-wider">{obj.address}</span>
                     </div>
                     
+                    <div className="flex flex-col gap-1.5 mt-2 bg-black/40 p-3 rounded-xl border border-white/5 max-h-32 overflow-hidden hover:overflow-y-auto custom-scrollbar transition-all group-hover:border-emerald-500/20">
+                      <span className="text-[8px] font-mono text-slate-500 uppercase">Memory_Data</span>
+                      <div className="text-[10px] font-mono text-slate-300">
+                        {obj.value && obj.value.startsWith('{') ? (
+                          <div className="space-y-1">
+                            {obj.value.replace(/[{}]/g, '').split(',').map((part, idx) => {
+                              const pair = part.split(':');
+                              if (pair.length < 2) return null;
+                              const key = pair[0].trim();
+                              const val = pair.slice(1).join(':').trim();
+                              
+                              let displayKey = key;
+                              if (key.startsWith('[')) {
+                                displayKey = key.replace(/[\[\]]/g, '');
+                              } else if (key.startsWith('.')) {
+                                displayKey = key.substring(1);
+                              }
+
+                              return (
+                                <div key={idx} className="flex justify-between items-center border-b border-white/5 last:border-0 pb-0.5">
+                                  <span className="text-[9px] text-emerald-500/60">{displayKey}</span>
+                                  <span className="text-emerald-400 font-bold">{val}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <span className="text-emerald-400 font-bold">{obj.value || '0x00'}</span>
+                        )}
+                      </div>
+                    </div>
+
                     <div className="flex items-center gap-3">
                       <div className="flex-1 h-3 rounded-full bg-black/40 overflow-hidden border border-white/5">
                         <motion.div 
