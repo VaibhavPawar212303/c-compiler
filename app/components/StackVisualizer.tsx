@@ -65,7 +65,14 @@ const StackVisualizer = ({ stack }: StackVisualizerProps) => {
                       <div className="flex flex-col gap-2 p-3 bg-black/40 rounded-xl border border-white/5 group-hover:border-blue-500/30 transition-all">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-bold text-slate-300 tracking-tighter">var <span className="text-blue-400">'{v.name}'</span></span>
+                             <div className="flex items-center gap-2 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                               <span className="text-[7px] font-mono text-blue-400 opacity-70">
+                                 [ ADDR: {v.address} ]
+                               </span>
+                               <span className="text-[10px] font-bold text-slate-300 tracking-tighter">
+                                 VARIABLE: <span className="text-blue-400">'{v.name}'</span>
+                               </span>
+                             </div>
                           </div>
                           <span className="text-[8px] font-mono px-1.5 py-0.5 bg-blue-500/10 text-blue-500/60 rounded uppercase tracking-tighter">
                             {v.type === 'pointer' ? 'PTR_64' : v.type === 'struct' ? 'STRUCT' : v.type === 'array' ? 'ARRAY' : 'INT_32'}
@@ -73,50 +80,12 @@ const StackVisualizer = ({ stack }: StackVisualizerProps) => {
                         </div>
                         
                         <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between px-2 py-1 bg-black/40 rounded border border-white/5">
-                            <span className="text-[9px] font-mono text-slate-500 italic">ADDR:</span>
-                            <span className="text-[9px] font-mono text-blue-400 font-bold">{v.address}</span>
-                          </div>
-                          
                           <div className="flex items-center justify-between px-2 py-1 bg-black/40 rounded border border-white/5" id={v.type === 'pointer' ? `ptr-src-${v.id}` : undefined}>
-                            <span className="text-[9px] font-mono text-slate-500 italic">DATA:</span>
+                            <span className="text-[9px] font-mono text-slate-500 italic uppercase tracking-wider">Storage_Data:</span>
                             <div className={`text-[10px] font-mono font-bold flex-1 text-right pl-4 ${v.type === 'pointer' ? 'text-emerald-400 underline decoration-emerald-500/30 underline-offset-4' : 'text-slate-200'}`}>
                               {v.value.startsWith('{') ? (
-                                <div className="text-left bg-black/30 p-3 rounded-xl border border-white/5 space-y-1.5 mt-2 max-h-48 overflow-y-auto custom-scrollbar shadow-inner">
-                                  {v.value.replace(/[{}]/g, '').split(',').map((part, idx) => {
-                                    const pair = part.split(':');
-                                    if (pair.length < 2) return null;
-                                    const key = pair[0].trim();
-                                    const val = pair.slice(1).join(':').trim();
-                                    
-                                    // Clean up key: remove leading '.' or '[]'
-                                    let displayKey = key;
-                                    let isIndex = false;
-                                    
-                                    if (key.startsWith('[')) {
-                                      const match = key.match(/^\[(\d+)\](.*)/);
-                                      if (match) {
-                                        isIndex = true;
-                                        displayKey = match[2] ? `${match[1]}${match[2]}` : match[1];
-                                      }
-                                    } else if (key.startsWith('.')) {
-                                      displayKey = key.substring(1);
-                                    }
-
-                                    return (
-                                      <div key={idx} className="flex justify-between items-center border-b border-white/5 last:border-0 pb-1 group/item">
-                                        <div className="flex items-center gap-1.5">
-                                          <div className={`w-1 h-1 rounded-sm ${isIndex ? 'bg-slate-600' : 'bg-blue-500/40'}`} />
-                                          <span className={`text-[9px] font-mono ${isIndex ? 'text-slate-500' : 'text-blue-400/80 font-bold'}`}>
-                                            {isIndex ? `[${displayKey}]` : displayKey}
-                                          </span>
-                                        </div>
-                                        <span className="text-emerald-400 text-[10px] tabular-nums font-bold drop-shadow-[0_0_8px_rgba(16,185,129,0.2)]">
-                                          {val || '0'}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
+                                <div className="text-left bg-black/30 p-3 rounded-xl border border-white/5 space-y-1 mt-2 max-h-64 overflow-y-auto custom-scrollbar shadow-inner">
+                                  {renderHierarchy(v.value, v.address)}
                                 </div>
                               ) : (
                                 v.value
@@ -141,6 +110,88 @@ const StackVisualizer = ({ stack }: StackVisualizerProps) => {
       </div>
     </div>
   );
+};
+
+interface TreeNode {
+  key: string;
+  label: string;
+  value?: string;
+  address: string;
+  children: Map<string, TreeNode>;
+  isIndex: boolean;
+}
+
+const renderHierarchy = (valueStr: string, baseAddr: string) => {
+  const clean = valueStr.replace(/[{}]/g, '');
+  if (!clean.trim()) return <div className="text-slate-600 italic text-[8px]">Empty</div>;
+
+  const root: TreeNode = { key: 'root', label: 'root', address: baseAddr, children: new Map(), isIndex: false };
+  const baseNum = parseInt(baseAddr, 16);
+
+  clean.split(',').forEach((part, idx) => {
+    const pair = part.split(':');
+    if (pair.length < 2) return;
+    const fullKey = pair[0].trim();
+    const val = pair.slice(1).join(':').trim();
+
+    // Parse path: b[0].id -> ["b", "[0]", ".id"]
+    const segments = fullKey.match(/\[\d+\]|\.[\w]+/g) || [fullKey];
+    let currentNode = root;
+
+    segments.forEach((seg, sIdx) => {
+      if (!currentNode.children.has(seg)) {
+        // Calculate sub-address: increment by some offset per segment/index
+        // Using a simplistic offset: 4 bytes per unique sibling
+        const siblingCount = currentNode.children.size;
+        const subAddr = '0x' + (baseNum + (siblingCount * 4) + (idx * 4)).toString(16).toUpperCase();
+        
+        currentNode.children.set(seg, {
+          key: seg,
+          label: seg.startsWith('.') ? seg.substring(1) : seg,
+          address: subAddr,
+          children: new Map(),
+          isIndex: seg.startsWith('['),
+          value: sIdx === segments.length - 1 ? val : undefined
+        });
+      }
+      currentNode = currentNode.children.get(seg)!;
+    });
+  });
+
+  const renderRecursive = (node: TreeNode, depth: number = 0) => {
+    return Array.from(node.children.values()).map((child, cIdx) => (
+      <div key={child.key + cIdx} className="space-y-1">
+        <div 
+          className="flex items-center justify-between group/line py-0.5 border-l border-white/5 hover:border-blue-500/20"
+          style={{ marginLeft: `${depth * 12}px`, paddingLeft: '8px' }}
+        >
+          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+            <span className="text-[7px] font-mono text-slate-600 transition-opacity whitespace-nowrap">
+              [ ADDR: {child.address} ]
+            </span>
+            <div className="flex items-center gap-1 overflow-hidden">
+               {depth > 0 && <span className="text-slate-700 text-[8px]">├─</span>}
+               <span className={`text-[9px] font-mono truncate ${child.isIndex ? 'text-slate-500' : 'text-blue-400 font-bold'}`}>
+                 {child.isIndex ? 'ELEMENT:' : 'MEMBER:'} {child.label}
+               </span>
+            </div>
+          </div>
+          {child.value !== undefined && (
+            <span className="text-emerald-400 text-[9px] font-bold ml-2 tabular-nums">
+              = {child.value}
+            </span>
+          )}
+        </div>
+        {child.children.size > 0 && (
+          <div className="space-y-1 border-l border-white/5 ml-2">
+            {renderRecursive(child, depth + 1)}
+          </div>
+        )}
+      </div>
+    ));
+  };
+
+  return <div className="space-y-0.5">{renderRecursive(root)}</div>;
 };
 
 export default StackVisualizer;
