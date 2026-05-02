@@ -5,6 +5,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
   Minus, 
+  Gamepad2,
+  Map,
+  Building2,
+  Network,
   Tv, 
   Workflow, 
   Monitor,
@@ -27,6 +31,7 @@ import PointerOverlay from './components/PointerOverlay';
 import CodeEditor from './components/CodeEditor';
 import StackVisualizer from './components/StackVisualizer';
 import HeapVisualizer from './components/HeapVisualizer';
+import DSAWorld from './components/DSAWorld';
 import { StackFrame, HeapObject, LoopState } from './types/memory';
 
 // --- Constants ---
@@ -43,7 +48,8 @@ const COLORS = [
 export default function MemoryArchitect() {
   const [stack, setStack] = useState<StackFrame[]>([]);
   const [heap, setHeap] = useState<HeapObject[]>([]);
-  const [activeTab, setActiveTab] = useState<'visualizer' | 'theory'>('visualizer');
+  const [compilerTab, setCompilerTab] = useState<'visualizer' | 'theory'>('visualizer');
+  const [mainTab, setMainTab] = useState<'compiler' | 'dsa'>('compiler');
   const [history, setHistory] = useState<string[]>(["SYSTEM_BOOT: READY"]);
   const [isMounted, setIsMounted] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -52,28 +58,29 @@ export default function MemoryArchitect() {
   const [userInput, setUserInput] = useState("");
   const [inputTarget, setInputTarget] = useState<{name: string, type: string} | null>(null);
   const [loopStack, setLoopStack] = useState<LoopState[]>([]);
+  const [swallowedLines, setSwallowedLines] = useState(1);
   
-  const [code, setCode] = useState(`int main() {
-  struct book {
-    int bookPage;
-    int bookPrice;
-    char bookName;
-  };
-  
-  struct book b[5];
-  
-  for(int i=0; i<5; i++) {
-    printf("Processing Book %d", i);
-    printf("Enter the value for book pages: ");
-    scanf("%d", &b[i].bookPage);
+  const [code, setCode] = useState(`#include <stdio.h>
 
-    printf("Enter the value for book price: ");
-    scanf("%d", &b[i].bookPrice);
+int main() {
+  int a = 10;
+  int *b;
+  b = &a;
 
-    printf("Enter the value for book Name: ");
-    scanf("%d", &b[i].bookName);
+  printf("Address of a  : %u\n", &a);
+  printf("Value of a    : %d\n", a);
+  printf("Value of a    : %d\n", *(&a));
+
+  printf("Address of b  : %u\n", &b);
+  printf("Address of a  : %u\n", a);
+  printf("Address of a  : %d\n", b);
+  
+  if (b == &a) {
+    printf("Both have the same value");
+  } else {
+    printf("Both values are different");
   }
-  
+
   return 0;
 }`);
   const [currentLine, setCurrentLine] = useState(-1);
@@ -380,6 +387,10 @@ export default function MemoryArchitect() {
     finalExpr = finalExpr.replace(/__KEY__|__/g, '');
     finalExpr = finalExpr.replace(/__SKIP__(\w+)__/g, '0');
 
+    // Normalize addresses for eval (0x... -> parseInt("0x...", 16))
+    const hexPattern = /0x[0-9A-Fa-f]+/g;
+    finalExpr = finalExpr.replace(hexPattern, (match) => parseInt(match, 16).toString());
+
     try {
         const cleanedExpr = finalExpr.replace(/!/g, ' ! ').replace(/&&/g, ' && ').replace(/\|\|/g, ' || ');
         // eslint-disable-next-line no-eval
@@ -409,23 +420,53 @@ export default function MemoryArchitect() {
       }
 
       const lines = code.split('\n');
-      const rawLine = lines[currentLine].trim();
       
-      if (!rawLine || rawLine.startsWith('//') || rawLine.startsWith('#')) {
-        setCurrentLine(prev => prev + 1);
+      // Multi-line statement accumulator
+      let statement = "";
+      let swallowed = 0;
+      let i = currentLine;
+      let parenDepth = 0;
+
+      while (i < lines.length) {
+        const raw = lines[i];
+        const trimmed = raw.trim();
+        statement += (statement ? " " : "") + trimmed;
+        swallowed++;
+
+        parenDepth += (raw.match(/\(/g) || []).length;
+        parenDepth -= (raw.match(/\)/g) || []).length;
+
+        if (parenDepth <= 0) {
+          if (trimmed.endsWith(';') || trimmed.endsWith('{') || trimmed.endsWith('}')) break;
+          if (trimmed.match(/^(if|for|while|else|struct)/) && (trimmed.endsWith(')') || trimmed.endsWith('else'))) break;
+          // Also stop if it's a preprocessor or empty line
+          if (trimmed.startsWith('#') || !trimmed) break;
+        }
+        i++;
+      }
+
+      if (swallowed > 1) {
+        logMessage(`DEBUG: Consolidated ${swallowed} lines into single execution unit.`);
+      }
+      setSwallowedLines(swallowed);
+
+      const line = statement.startsWith('for') ? statement : statement.split(';')[0].trim();
+      
+      if (!line || line.startsWith('//') || line.startsWith('#')) {
+        setCurrentLine(prev => prev + swallowed);
         return;
       }
 
       // Special handling for struct definitions (skip them)
-      if (rawLine.startsWith('struct') && (rawLine.includes('{') || rawLine.endsWith('{')) && !rawLine.includes(';')) {
+      if (line.startsWith('struct') && (line.includes('{') || line.endsWith('{')) && !line.includes(';')) {
         let depth = 0;
         let skipTo = -1;
-        for (let i = currentLine; i < lines.length; i++) {
-          const l = lines[i];
+        for (let j = currentLine; j < lines.length; j++) {
+          const l = lines[j];
           if (l.includes('{')) depth++;
           if (l.includes('}')) depth--;
-          if (depth === 0 && i !== currentLine) {
-            skipTo = i;
+          if (depth === 0 && j !== currentLine) {
+            skipTo = j;
             break;
           }
         }
@@ -435,10 +476,101 @@ export default function MemoryArchitect() {
           return;
         }
       }
-
-      // Special handling for lines: don't split by semicolon if it's a for loop header
-      const line = rawLine.startsWith('for') ? rawLine : rawLine.split(';')[0].trim();
       
+      // if-else logic
+      if (line.match(/^if\s*\(/)) {
+        const match = line.match(/^if\s*\((.*)\)/);
+        if (match) {
+          const condition = match[1];
+          const result = evaluateExpression(condition);
+          // eslint-disable-next-line no-eval
+          const isTrue = eval(result);
+          
+          if (!isTrue) {
+            // Find the else block or end of if block
+            let depth = 0;
+            let skipTo = -1;
+            for (let i = currentLine; i < lines.length; i++) {
+              if (lines[i].includes('{')) depth++;
+              if (lines[i].includes('}')) depth--;
+              if (depth === 0 && i !== currentLine) {
+                 // Check if the current line or next non-empty line starts with 'else'
+                 const lineContent = lines[i].trim();
+                 if (lineContent.includes('}')) {
+                    // It could be "} else {"
+                    if (lineContent.includes('else')) {
+                       // Skip to inside the else
+                       skipTo = i; 
+                       // Special case: we want to execute the else, so we move to it
+                       // but then skipCode should handle skipping the else word
+                    } else {
+                       let nextLineIdx = i + 1;
+                       while (nextLineIdx < lines.length && !lines[nextLineIdx].trim()) nextLineIdx++;
+                       if (nextLineIdx < lines.length && lines[nextLineIdx].trim().startsWith('else')) {
+                          skipTo = nextLineIdx;
+                       } else {
+                          skipTo = i; 
+                       }
+                    }
+                 }
+                 break;
+              }
+            }
+            if (skipTo !== -1) {
+              // If we skipped to an 'else' line, we want to step INTO it, 
+              // but we need to signal that the 'if' was false. 
+              // For simplicity, we step after the 'else' keyword or brace.
+              const targetLine = lines[skipTo].trim();
+              if (targetLine.includes('else')) {
+                 setCurrentLine(skipTo); // Let the next step execute the else (which we'll fix to allow if coming from skip)
+                 logMessage(`IF_FALSE: Branching to ELSE.`);
+              } else {
+                 setCurrentLine(skipTo + 1);
+                 logMessage(`IF_FALSE: skipping block.`);
+              }
+              return;
+            }
+          } else {
+            setCurrentLine(prev => prev + swallowed);
+            logMessage(`IF_TRUE: executing branch...`);
+            return;
+          }
+        }
+      }
+
+      if (line.includes('else')) {
+         // Logic check: Did we get here naturally? 
+         // If we hit 'else' without skipping to it, it means the 'if' block was true.
+         // So we must skip the else block.
+         let depth = 0;
+         let skipTo = -1;
+         
+         // Only skip if the line is purely an else or starts with it (not after an if skip)
+         const prevLine = currentLine > 0 ? lines[currentLine-1].trim() : "";
+         const isAfterIfBlock = prevLine.includes('}');
+
+         if (isAfterIfBlock || line.startsWith('}')) {
+            for (let i = currentLine; i < lines.length; i++) {
+              if (lines[i].includes('{')) depth++;
+              if (lines[i].includes('}')) depth--;
+              if (depth === 0 && i !== currentLine) {
+                skipTo = i;
+                break;
+              }
+            }
+            if (skipTo !== -1) {
+               setCurrentLine(skipTo + 1);
+               logMessage(`ELSE: Skipping (IF branch was executed).`);
+               return;
+            }
+         } else {
+            // We were skipped here because IF was false.
+            // Move into the ELSE block.
+            setCurrentLine(prev => prev + swallowed);
+            return;
+         }
+      }
+
       // For Loop Logic
       if (line.match(/^for\s*\(/)) {
         const match = line.match(/for\s*\(([^;]*);\s*([^;]*);\s*([^)]*)\)/);
@@ -483,7 +615,7 @@ export default function MemoryArchitect() {
           const isTrue = eval(condVal);
           
           if (isTrue) {
-            setCurrentLine(prev => prev + 1);
+            setCurrentLine(prev => prev + swallowed);
             logMessage(`LOOP_ITER: '${cond}' is TRUE. Entering body...`);
           } else {
             setLoopStack(prev => prev.filter(l => l.startLine !== currentLine));
@@ -495,7 +627,7 @@ export default function MemoryArchitect() {
       }
 
       if (line === '{') {
-        setCurrentLine(prev => prev + 1);
+        setCurrentLine(prev => prev + swallowed);
         logMessage("SCOPE_ENTER: Opening memory segment.");
         return;
       }
@@ -504,7 +636,7 @@ export default function MemoryArchitect() {
         const funcName = line.match(/(?:void|int)\s+(\w+)/)?.[1] || "main";
         pushFrame(funcName);
         logMessage(`ENTER_PROC: Frame allocated for '${funcName}'. LIFO growth.`);
-        setCurrentLine(prev => prev + 1);
+        setCurrentLine(prev => prev + swallowed);
         return;
       } 
       else if ((line.includes('int') || line.includes('char') || line.includes('struct') || line.includes('float')) && line.includes('=') && !line.includes('malloc')) {
@@ -682,7 +814,7 @@ export default function MemoryArchitect() {
         }
       }
 
-      setCurrentLine(prev => prev + 1);
+      setCurrentLine(prev => prev + swallowed);
     } catch (e) {
       console.error(e);
       logMessage(`EXCEPTION: ${e instanceof Error ? e.message : 'Unknown error during execution'}`);
@@ -725,7 +857,7 @@ export default function MemoryArchitect() {
     setIsAwaitingInput(false);
     setUserInput("");
     setInputTarget(null);
-    setCurrentLine(prev => prev + 1);
+    setCurrentLine(prev => prev + swallowedLines);
     setIsAutoStepping(true);
   };
 
@@ -801,16 +933,49 @@ export default function MemoryArchitect() {
       <header className={`relative z-40 border-b px-6 py-3 flex items-center justify-between backdrop-blur-xl ${
         theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/60 shadow-sm'
       }`}>
-        <div className="flex items-center gap-4">
-          <div className={`p-2 rounded-none border ${theme === 'dark' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-600/10 border-blue-600/20 text-blue-600'}`}>
-            <Cpu size={20} strokeWidth={2.5} />
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
+            <div className={`p-2 rounded-none border ${theme === 'dark' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-600/10 border-blue-600/20 text-blue-600'}`}>
+              <Cpu size={20} strokeWidth={2.5} />
+            </div>
+            <div>
+              <h1 className={`text-lg font-black tracking-tighter uppercase ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                C_Compiler_Visualizer <span className="text-[9px] bg-emerald-500/20 text-emerald-500 px-1.5 py-0.5 rounded-none ml-2 align-middle border border-emerald-500/30">v2.1</span>
+              </h1>
+              <p className="text-[9px] font-mono opacity-50 uppercase tracking-[0.2em]">Kernel-Level Memory Trace</p>
+            </div>
           </div>
-          <div>
-            <h1 className={`text-lg font-black tracking-tighter uppercase ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
-              C_Compiler_Visualizer <span className="text-[9px] bg-emerald-500/20 text-emerald-500 px-1.5 py-0.5 rounded-none ml-2 align-middle border border-emerald-500/30">v2.1</span>
-            </h1>
-            <p className="text-[9px] font-mono opacity-50 uppercase tracking-[0.2em]">Kernel-Level Memory Trace</p>
-          </div>
+
+          <nav className="hidden md:flex items-center ml-8 border-l border-white/10 pl-8 h-10 gap-1">
+            <button 
+              onClick={() => setMainTab('compiler')}
+              className={`px-4 h-full text-[10px] font-black uppercase tracking-widest transition-all relative flex items-center gap-2 ${
+                mainTab === 'compiler' 
+                  ? (theme === 'dark' ? 'text-white' : 'text-blue-600') 
+                  : (theme === 'dark' ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')
+              }`}
+            >
+              <Cpu size={14} />
+              Compiler
+              {mainTab === 'compiler' && (
+                <motion.div layoutId="activeTab" className="absolute -bottom-[13px] left-0 right-0 h-0.5 bg-blue-500" />
+              )}
+            </button>
+            <button 
+              onClick={() => setMainTab('dsa')}
+              className={`px-4 h-full text-[10px] font-black uppercase tracking-widest transition-all relative flex items-center gap-2 ${
+                mainTab === 'dsa' 
+                  ? (theme === 'dark' ? 'text-white' : 'text-emerald-500') 
+                  : (theme === 'dark' ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')
+              }`}
+            >
+              <Gamepad2 size={14} />
+              DSA_World
+              {mainTab === 'dsa' && (
+                <motion.div layoutId="activeTab" className="absolute -bottom-[13px] left-0 right-0 h-0.5 bg-emerald-500" />
+              )}
+            </button>
+          </nav>
         </div>
 
         <div className="flex items-center gap-4">
@@ -838,200 +1003,222 @@ export default function MemoryArchitect() {
       </header>
 
       <div className="flex-1 flex overflow-hidden relative z-10" ref={containerRef}>
-        <div className="flex-1 flex overflow-hidden">
-          <section className={`w-[450px] min-w-[400px] flex flex-col border-r transition-colors ${
-            theme === 'dark' ? 'border-white/10' : 'border-black/10'
-          }`}>
-            <div className={`flex items-center gap-2 p-3 border-b ${
-              theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/20'
-            }`}>
-              <Terminal size={12} className="text-blue-500" />
-              <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Source_Buffer</span>
-            </div>
-            <div className="flex-1 overflow-hidden relative flex flex-col">
-              <CodeEditor 
-                code={code} setCode={setCode} currentLine={currentLine} theme={theme}
-              />
-            </div>
-          </section>
-
-          <section className={`flex-1 flex flex-col overflow-y-auto custom-scrollbar transition-colors ${
-            theme === 'dark' ? 'bg-black/20' : 'bg-[#EFEEEA]'
-          }`}>
-            <div className={`flex items-center justify-between p-3 border-b sticky top-0 z-20 backdrop-blur-md ${
-              theme === 'dark' ? 'border-white/10 bg-black/60' : 'border-black/10 bg-white/60'
-            }`}>
-              <div className="flex items-center gap-2">
-                <Database size={12} className="text-emerald-500" />
-                <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Memory_Sector</span>
-              </div>
-              <div className="flex gap-4">
-                 <div className="flex items-center gap-2">
-                   <div className="w-2 h-2 rounded-none bg-blue-500/50" />
-                   <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Stack</span>
-                 </div>
-                 <div className="flex items-center gap-2">
-                   <div className="w-2 h-2 rounded-none bg-emerald-500/50" />
-                   <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Heap</span>
-                 </div>
-              </div>
-            </div>
-            
-            <div className="p-8 space-y-8 flex flex-col items-center">
-              <div className="w-full max-w-6xl grid grid-cols-1 xl:grid-cols-2 gap-8 relative">
-                 <StackVisualizer theme={theme} stack={stack} />
-                 <HeapVisualizer theme={theme} heap={heap} freeHeap={freeHeap} />
-              </div>
-            </div>
-          </section>
-
-          <section className={`w-[380px] min-w-[350px] flex flex-col border-l transition-colors ${
-            theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'
-          }`}>
-            <div className={`flex items-center gap-2 p-3 border-b ${
-              theme === 'dark' ? 'border-white/10 bg-black/20' : 'border-black/5 bg-white/20'
-            }`}>
-              <Activity size={12} className="text-orange-500" />
-              <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Pipeline_Monitoring</span>
-            </div>
-            
-            <div className="p-5 space-y-5 flex-1 overflow-y-auto custom-scrollbar">
-              {/* IO BUS SECTION - REPOSITIONED ABOVE CONSOLE */}
-              <AnimatePresence>
-                {isAwaitingInput && (
-                  <motion.section 
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className={`border p-5 shadow-2xl relative overflow-hidden rounded-none ${
-                      theme === 'dark' ? 'bg-orange-500/[0.08] border-orange-500/30' : 'bg-orange-600/[0.05] border-orange-600/30'
-                    }`}
-                  >
-                    <h3 className="text-[9px] font-black text-orange-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
-                      <Activity size={12} className="animate-pulse" /> IO_BUS_WAIT: STDIN
-                    </h3>
-                    <div className="flex flex-col gap-3 relative z-10">
-                      <div>
-                        <p className={`text-[10px] font-bold uppercase mb-2 ${theme === 'dark' ? 'text-orange-200/60' : 'text-orange-900/60'}`}>
-                          Input_Target: <span className="text-orange-500 font-mono">*{inputTarget?.name}</span>
-                        </p>
-                        <input
-                          type="text"
-                          id={inputTarget?.name}
-                          value={userInput}
-                          onChange={(e) => setUserInput(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleInputSubmit(e as any)}
-                          autoFocus
-                          placeholder="int val..."
-                          className={`w-full bg-black/40 border p-3 rounded-none font-mono text-xs focus:outline-none focus:ring-1 transition-all placeholder:opacity-20 ${
-                            theme === 'dark' 
-                              ? 'border-white/10 text-emerald-400 focus:ring-emerald-500/40' 
-                              : 'border-black/10 text-emerald-600 focus:ring-emerald-600/40'
-                          }`}
-                        />
-                      </div>
-                      <button
-                        onClick={(e) => handleInputSubmit(e as any)}
-                        className="bg-orange-600 hover:bg-orange-500 text-white p-2.5 rounded-none text-[9px] font-black uppercase tracking-widest active:scale-95 transition-all"
-                      >
-                        Commit_Data
-                      </button>
-                    </div>
-                  </motion.section>
-                )}
-              </AnimatePresence>
-
-              <section className={`p-5 overflow-hidden relative shadow-2xl border transition-all rounded-none ${
-                theme === 'dark' ? 'bg-[#121212] border-white/10' : 'bg-slate-900 border-black/10'
+        <AnimatePresence mode="wait">
+          {mainTab === 'compiler' ? (
+            <motion.div 
+              key="compiler"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.3 }}
+              className="flex-1 flex overflow-hidden"
+            >
+              <section className={`w-[450px] min-w-[400px] flex flex-col border-r transition-colors ${
+                theme === 'dark' ? 'border-white/10' : 'border-black/10'
               }`}>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-[9px] font-semibold text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                    <Tv size={12} /> Console_Log
-                  </h3>
-                  <div className="flex gap-1">
-                    <div className="w-1 h-1 bg-red-500/50" />
-                    <div className="w-1 h-1 bg-amber-500/50" />
-                    <div className="w-1 h-1 bg-emerald-500/50" />
+                <div className={`flex items-center gap-2 p-3 border-b ${
+                  theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/20'
+                }`}>
+                  <Terminal size={12} className="text-blue-500" />
+                  <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Source_Buffer</span>
+                </div>
+                <div className="flex-1 overflow-hidden relative flex flex-col">
+                  <CodeEditor 
+                    code={code} setCode={setCode} currentLine={currentLine} theme={theme}
+                  />
+                </div>
+              </section>
+
+              <section className={`flex-1 flex flex-col overflow-y-auto custom-scrollbar transition-colors ${
+                theme === 'dark' ? 'bg-black/20' : 'bg-[#EFEEEA]'
+              }`}>
+                <div className={`flex items-center justify-between p-3 border-b sticky top-0 z-20 backdrop-blur-md ${
+                  theme === 'dark' ? 'border-white/10 bg-black/60' : 'border-black/10 bg-white/60'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <Database size={12} className="text-emerald-500" />
+                    <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Memory_Sector</span>
+                  </div>
+                  <div className="flex gap-4">
+                     <div className="flex items-center gap-2">
+                       <div className="w-2 h-2 rounded-none bg-blue-500/50" />
+                       <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Stack</span>
+                     </div>
+                     <div className="flex items-center gap-2">
+                       <div className="w-2 h-2 rounded-none bg-emerald-500/50" />
+                       <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Heap</span>
+                     </div>
                   </div>
                 </div>
-                <div className="space-y-1.5 h-[320px] overflow-y-auto custom-scrollbar pr-3 font-mono text-[10px] leading-relaxed">
-                  {history.map((msg, i) => (
-                    <div key={i} className="flex gap-3 items-start py-1 border-b border-white/5 last:border-0 opacity-80 hover:opacity-100 transition-opacity">
-                      <span className="opacity-20 text-[9px] mt-0.5 shrink-0">{(i+1).toString().padStart(2, '0')}</span>
-                      <span className={`${
-                        msg.includes('ERROR') || msg.includes('EXCEPTION') ? 'text-red-400' : 
-                        msg.includes('STDOUT') ? (theme === 'dark' ? 'text-white' : 'text-slate-100') : 
-                        (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-300')
-                      } break-all`}>
-                        {msg}
-                      </span>
-                    </div>
-                  ))}
-                  <div ref={logEndRef} className="h-0" />
+                
+                <div className="p-8 space-y-12 flex flex-col items-center flex-1 transition-colors">
+                  <div className="w-full max-w-7xl grid grid-cols-1 xl:grid-cols-2 gap-10 relative">
+                     <StackVisualizer theme={theme} stack={stack} />
+                     <HeapVisualizer theme={theme} heap={heap} freeHeap={freeHeap} />
+                  </div>
+                  <div className="flex-1 min-h-[100px]" /> 
                 </div>
               </section>
 
-              <section className={`border p-5 backdrop-blur-md transition-all shadow-xl rounded-none ${
-                theme === 'dark' 
-                  ? 'bg-white/[0.03] border-white/10' 
-                  : 'bg-black/[0.03] border-black/10'
+              <section className={`w-[380px] min-w-[350px] flex flex-col border-l transition-colors ${
+                theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'
               }`}>
-                <h3 className={`text-[9px] font-bold uppercase tracking-[0.2em] mb-5 flex items-center gap-2 ${
-                  theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+                <div className={`flex items-center gap-2 p-3 border-b ${
+                  theme === 'dark' ? 'border-white/10 bg-black/20' : 'border-black/5 bg-white/20'
                 }`}>
-                  <Wrench size={12} /> Execution_Control
-                </h3>
-                <div className="grid grid-cols-2 gap-3">
-                  <button 
-                    onClick={runCode}
-                    className={`flex flex-col items-center gap-2 p-4 border transition-all col-span-2 group rounded-none ${
-                      theme === 'dark' ? 'border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-400' 
-                                       : 'border-emerald-600/20 bg-emerald-600/5 hover:bg-emerald-600/10 text-emerald-600'
-                    }`}
-                  >
-                    <Play className="animate-pulse" size={18} />
-                    <span className="text-[9px] font-black uppercase tracking-widest">Compile_&_Run</span>
-                  </button>
-                  <button 
-                    onClick={stepCode}
-                    disabled={isAutoStepping || isAwaitingInput}
-                    className={`flex flex-col items-center gap-2 p-4 border transition-all disabled:opacity-20 rounded-none ${
-                      theme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10' : 'border-black/10 bg-white shadow-sm hover:bg-slate-50'
-                    }`}
-                  >
-                    <Play className="text-blue-500" size={18} />
-                    <span className="text-[8px] font-bold uppercase tracking-widest">Step_Next</span>
-                  </button>
-                  <button 
-                    onClick={() => setIsAutoStepping(!isAutoStepping)}
-                    disabled={isAwaitingInput}
-                    className={`flex flex-col items-center gap-2 p-4 border transition-all rounded-none ${
-                      isAutoStepping 
-                        ? 'bg-red-500/10 border-red-500/20 text-red-500' 
-                        : theme === 'dark' ? 'border-white/10 bg-white/5 hover:border-emerald-500/20' 
-                                         : 'border-black/10 bg-white shadow-sm'
-                    }`}
-                  >
-                    {isAutoStepping ? <Square size={18} /> : <FastForward size={18} className="text-emerald-500" />}
-                    <span className="text-[8px] font-bold uppercase tracking-widest">
-                      {isAutoStepping ? 'Halt' : 'Auto'}
-                    </span>
-                  </button>
-                  <button 
-                    onClick={resetCompiler}
-                    className={`flex flex-col items-center gap-2 p-4 border transition-all col-span-2 group rounded-none ${
-                      theme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-red-500/10' 
-                                       : 'border-black/10 bg-white shadow-sm hover:bg-red-50'
-                    }`}
-                  >
-                    <RefreshCw className="text-slate-400 group-hover:rotate-180 transition-transform duration-700" size={18} />
-                    <span className="text-[8px] font-bold uppercase tracking-widest">Clear_All</span>
-                  </button>
+                  <Activity size={12} className="text-orange-500" />
+                  <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Pipeline_Monitoring</span>
+                </div>
+                
+                <div className="p-5 space-y-5 flex-1 overflow-y-auto custom-scrollbar">
+                  {/* IO BUS SECTION - REPOSITIONED ABOVE CONSOLE */}
+                  <AnimatePresence>
+                    {isAwaitingInput && (
+                      <motion.section 
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className={`border p-5 shadow-2xl relative overflow-hidden rounded-none ${
+                          theme === 'dark' ? 'bg-orange-500/[0.08] border-orange-500/30' : 'bg-orange-600/[0.05] border-orange-600/30'
+                        }`}
+                      >
+                        <h3 className="text-[9px] font-black text-orange-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                          <Activity size={12} className="animate-pulse" /> IO_BUS_WAIT: STDIN
+                        </h3>
+                        <div className="flex flex-col gap-3 relative z-10">
+                          <div>
+                            <p className={`text-[10px] font-bold uppercase mb-2 ${theme === 'dark' ? 'text-orange-200/60' : 'text-orange-900/60'}`}>
+                              Input_Target: <span className="text-orange-500 font-mono">*{inputTarget?.name}</span>
+                            </p>
+                            <input
+                              type="text"
+                              id={inputTarget?.name}
+                              value={userInput}
+                              onChange={(e) => setUserInput(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && handleInputSubmit(e as any)}
+                              autoFocus
+                              placeholder="int val..."
+                              className={`w-full bg-black/40 border p-3 rounded-none font-mono text-xs focus:outline-none focus:ring-1 transition-all placeholder:opacity-20 ${
+                                theme === 'dark' 
+                                  ? 'border-white/10 text-emerald-400 focus:ring-emerald-500/40' 
+                                  : 'border-black/10 text-emerald-600 focus:ring-emerald-600/40'
+                              }`}
+                            />
+                          </div>
+                          <button
+                            onClick={(e) => handleInputSubmit(e as any)}
+                            className="bg-orange-600 hover:bg-orange-500 text-white p-2.5 rounded-none text-[9px] font-black uppercase tracking-widest active:scale-95 transition-all"
+                          >
+                            Commit_Data
+                          </button>
+                        </div>
+                      </motion.section>
+                    )}
+                  </AnimatePresence>
+
+                  <section className={`p-5 overflow-hidden relative shadow-2xl border transition-all rounded-none ${
+                    theme === 'dark' ? 'bg-[#121212] border-white/10' : 'bg-slate-900 border-black/10'
+                  }`}>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-[9px] font-semibold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                        <Tv size={12} /> Console_Log
+                      </h3>
+                      <div className="flex gap-1">
+                        <div className="w-1 h-1 bg-red-500/50" />
+                        <div className="w-1 h-1 bg-amber-500/50" />
+                        <div className="w-1 h-1 bg-emerald-500/50" />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 h-[320px] overflow-y-auto custom-scrollbar pr-3 font-mono text-[10px] leading-relaxed">
+                      {history.map((msg, i) => (
+                        <div key={i} className="flex gap-3 items-start py-1 border-b border-white/5 last:border-0 opacity-80 hover:opacity-100 transition-opacity">
+                          <span className="opacity-20 text-[9px] mt-0.5 shrink-0">{(i+1).toString().padStart(2, '0')}</span>
+                          <span className={`${
+                            msg.includes('ERROR') || msg.includes('EXCEPTION') ? 'text-red-400' : 
+                            msg.includes('STDOUT') ? (theme === 'dark' ? 'text-white' : 'text-slate-100') : 
+                            (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-300')
+                          } break-all`}>
+                            {msg}
+                          </span>
+                        </div>
+                      ))}
+                      <div ref={logEndRef} className="h-0" />
+                    </div>
+                  </section>
+
+                  <section className={`border p-5 backdrop-blur-md transition-all shadow-xl rounded-none ${
+                    theme === 'dark' 
+                      ? 'bg-white/[0.03] border-white/10' 
+                      : 'bg-black/[0.03] border-black/10'
+                  }`}>
+                    <h3 className={`text-[9px] font-bold uppercase tracking-[0.2em] mb-5 flex items-center gap-2 ${
+                      theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+                    }`}>
+                      <Wrench size={12} /> Execution_Control
+                    </h3>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button 
+                        onClick={runCode}
+                        className={`flex flex-col items-center gap-2 p-4 border transition-all col-span-2 group rounded-none ${
+                          theme === 'dark' ? 'border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-400' 
+                                           : 'border-emerald-600/20 bg-emerald-600/5 hover:bg-emerald-600/10 text-emerald-600'
+                        }`}
+                      >
+                        <Play className="animate-pulse" size={18} />
+                        <span className="text-[9px] font-black uppercase tracking-widest">Compile_&_Run</span>
+                      </button>
+                      <button 
+                        onClick={stepCode}
+                        disabled={isAutoStepping || isAwaitingInput}
+                        className={`flex flex-col items-center gap-2 p-4 border transition-all disabled:opacity-20 rounded-none ${
+                          theme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10' : 'border-black/10 bg-white shadow-sm hover:bg-slate-50'
+                        }`}
+                      >
+                        <Play className="text-blue-500" size={18} />
+                        <span className="text-[8px] font-bold uppercase tracking-widest">Step_Next</span>
+                      </button>
+                      <button 
+                        onClick={() => setIsAutoStepping(!isAutoStepping)}
+                        disabled={isAwaitingInput}
+                        className={`flex flex-col items-center gap-2 p-4 border transition-all rounded-none ${
+                          isAutoStepping 
+                            ? 'bg-red-500/10 border-red-500/20 text-red-500' 
+                            : theme === 'dark' ? 'border-white/10 bg-white/5 hover:border-emerald-500/20' 
+                                             : 'border-black/10 bg-white shadow-sm'
+                        }`}
+                      >
+                        {isAutoStepping ? <Square size={18} /> : <FastForward size={18} className="text-emerald-500" />}
+                        <span className="text-[8px] font-bold uppercase tracking-widest">
+                          {isAutoStepping ? 'Halt' : 'Auto'}
+                        </span>
+                      </button>
+                      <button 
+                        onClick={resetCompiler}
+                        className={`flex flex-col items-center gap-2 p-4 border transition-all col-span-2 group rounded-none ${
+                          theme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-red-500/10' 
+                                           : 'border-black/10 bg-white shadow-sm hover:bg-red-50'
+                        }`}
+                      >
+                        <RefreshCw className="text-slate-400 group-hover:rotate-180 transition-transform duration-700" size={18} />
+                        <span className="text-[8px] font-bold uppercase tracking-widest">Clear_All</span>
+                      </button>
+                    </div>
+                  </section>
                 </div>
               </section>
-            </div>
-          </section>
-        </div>
+            </motion.div>
+          ) : (
+            <motion.div 
+              key="dsa"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex flex-col overflow-hidden"
+            >
+              <DSAWorld theme={theme} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </main>
   );
