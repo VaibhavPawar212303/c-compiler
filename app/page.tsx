@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
   Minus, 
@@ -10,13 +11,23 @@ import {
   Wrench,
   Cpu,
   Database,
-  Zap
+  Zap,
+  Play, 
+  Square, 
+  FastForward, 
+  RefreshCw, 
+  Terminal, 
+  History, 
+  BookOpen,
+  Moon,
+  Sun,
+  Activity
 } from 'lucide-react';
 import PointerOverlay from './components/PointerOverlay';
 import CodeEditor from './components/CodeEditor';
 import StackVisualizer from './components/StackVisualizer';
 import HeapVisualizer from './components/HeapVisualizer';
-import { StackFrame, HeapObject, PointerLink, LoopState } from './types/memory';
+import { StackFrame, HeapObject, LoopState } from './types/memory';
 
 // --- Constants ---
 
@@ -33,9 +44,9 @@ export default function MemoryArchitect() {
   const [stack, setStack] = useState<StackFrame[]>([]);
   const [heap, setHeap] = useState<HeapObject[]>([]);
   const [activeTab, setActiveTab] = useState<'visualizer' | 'theory'>('visualizer');
-  const [statusMessage, setStatusMessage] = useState("SYSTEM_BOOT: READY");
+  const [history, setHistory] = useState<string[]>(["SYSTEM_BOOT: READY"]);
   const [isMounted, setIsMounted] = useState(false);
-  const [pointerLinks, setPointerLinks] = useState<PointerLink[]>([]);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isAutoStepping, setIsAutoStepping] = useState(false);
   const [isAwaitingInput, setIsAwaitingInput] = useState(false);
   const [userInput, setUserInput] = useState("");
@@ -68,7 +79,11 @@ export default function MemoryArchitect() {
   const [currentLine, setCurrentLine] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const stepTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const stepTimerRef = useRef<NodeJS.Timeout|null>(null);
+
+  const logMessage = useCallback((msg: string) => {
+    setHistory(prev => [...prev, msg].slice(-50)); // Keep last 50 messages
+  }, []);
 
   useEffect(() => {
     setIsMounted(true);
@@ -94,17 +109,27 @@ export default function MemoryArchitect() {
       ]
     };
     setStack(prev => [...prev, newFrame]);
-    setStatusMessage(`PUSH: Stack pointer moved DOWN to ${address}. LIFO: Only this new frame is accessible.`);
-  }, [stack.length]);
+    logMessage(`PUSH: Stack pointer moved DOWN to ${address}. LIFO: Only this new frame is accessible.`);
+  }, [stack.length, logMessage]);
 
   const popFrame = useCallback(() => {
     setStack(prev => {
         if (prev.length === 0) return prev;
         const removed = prev[prev.length - 1];
-        setStatusMessage(`POP: LIFO policy active. Removed top frame at ${removed.id}. Pointer moves UP.`);
+        logMessage(`POP: LIFO policy active. Removed top frame at ${removed.id}. Pointer moves UP.`);
         return prev.slice(0, -1);
     });
-  }, []);
+  }, [logMessage]);
+
+  const resetCompiler = useCallback(() => {
+    setStack([]);
+    setHeap([]);
+    setCurrentLine(-1);
+    setIsAutoStepping(false);
+    setIsAwaitingInput(false);
+    setLoopStack([]);
+    logMessage("SYSTEM_RESET: Memory cleared. Waiting for execution buffer.");
+  }, [logMessage]);
 
   const updateOrAddVariable = useCallback((name: string, value: string, type: 'value' | 'pointer' | 'struct' | 'array' = 'value') => {
     // Check if we are updating a heap object via dereference (e.g., p->x or *p)
@@ -245,11 +270,24 @@ export default function MemoryArchitect() {
     let iterations = 0;
     while (iterations < 40) {
       iterations++;
-      // Match variables with optional chain of accessors like arr[i][j].member or p->x
-      const match = finalExpr.match(/(\b[a-zA-Z_]\w*\b)((?:\[[^\]]+\]|\.[\w]+|->[\w]+)*)/);
+
+      // Handle dereference explicitly: *(address) or *address
+      const derefMatch = finalExpr.match(/\*(\(0x[0-9A-Fa-f]+\)|0x[0-9A-Fa-f]+)/);
+      if (derefMatch) {
+         const fullDeref = derefMatch[0];
+         const targetAddr = derefMatch[1].replace(/[()]/g, '');
+         const heapTarget = heap.find(h => h.address === targetAddr);
+         const stackTarget = [...stack].reverse().flatMap(f => f.variables).find(v => v.address === targetAddr);
+         const targetValue = heapTarget ? heapTarget.value : (stackTarget ? stackTarget.value : '0');
+         finalExpr = finalExpr.replace(fullDeref, targetValue);
+         continue;
+      }
+
+      // Match variables with optional & prefix and chain of accessors
+      const match = finalExpr.match(/(&)?(\b[a-zA-Z_]\w*\b)((?:\[[^\]]+\]|\.[\w]+|->[\w]+)*)/);
       if (!match) break;
 
-      const [fullMatch, root, tail] = match;
+      const [fullMatch, isAddress, root, tail] = match;
       
       // Keywords to ignore
       if (['int', 'char', 'float', 'double', 'void', 'struct', 'if', 'for', 'while', 'return', 'printf', 'scanf', 'malloc', 'free', 'sizeof', 'NULL'].includes(root)) {
@@ -264,8 +302,8 @@ export default function MemoryArchitect() {
       const v = sortedVars.find(v => v.name === root);
       
       if (v) {
-        let resolvedValue = v.value;
-        if ((v.type === 'array' || v.type === 'struct' || v.type === 'pointer') && tail) {
+        let resolvedValue = isAddress ? v.address : v.value;
+        if (!isAddress && (v.type === 'array' || v.type === 'struct' || v.type === 'pointer') && tail) {
           const normalizedTail = tail.replace(/->/g, '.');
           // Resolve indices if they are variables or expressions in the tail
           let resolvedTail = normalizedTail;
@@ -350,7 +388,7 @@ export default function MemoryArchitect() {
     } catch (e) {
       return finalExpr;
     }
-  }, [stack]);
+  }, [stack, heap]);
 
 
   const stepCode = useCallback(() => {
@@ -360,13 +398,13 @@ export default function MemoryArchitect() {
         setHeap([]);
         setLoopStack([]);
         setCurrentLine(0);
-        setStatusMessage("INITIALIZING... KERNEL_START_PAUSED");
+        logMessage("INITIALIZING... KERNEL_START_PAUSED");
         return;
       }
 
       if (currentLine >= code.split('\n').length) {
         setIsAutoStepping(false);
-        setStatusMessage("EXECUTION_COMPLETE: Kernel gracefully exited.");
+        logMessage("EXECUTION_COMPLETE: Kernel gracefully exited.");
         return;
       }
 
@@ -393,7 +431,7 @@ export default function MemoryArchitect() {
         }
         if (skipTo !== -1) {
           setCurrentLine(skipTo + 1);
-          setStatusMessage("SKIP: Template defined. No memory allocated for pure definitions.");
+          logMessage("SKIP: Template defined. No memory allocated for pure definitions.");
           return;
         }
       }
@@ -436,7 +474,7 @@ export default function MemoryArchitect() {
               increment: incr,
               bodyEndLine: bodyEnd
             }]);
-            setStatusMessage(`LOOP_INIT: Initialized with '${init}'. Next: '${cond}'.`);
+            logMessage(`LOOP_INIT: Initialized with '${init}'. Next: '${cond}'.`);
             return; // Wait for state to settle
           }
 
@@ -446,11 +484,11 @@ export default function MemoryArchitect() {
           
           if (isTrue) {
             setCurrentLine(prev => prev + 1);
-            setStatusMessage(`LOOP_ITER: '${cond}' is TRUE. Entering body...`);
+            logMessage(`LOOP_ITER: '${cond}' is TRUE. Entering body...`);
           } else {
             setLoopStack(prev => prev.filter(l => l.startLine !== currentLine));
             setCurrentLine(bodyEnd + 1);
-            setStatusMessage(`LOOP_EXIT: '${cond}' is FALSE. Terminating.`);
+            logMessage(`LOOP_EXIT: '${cond}' is FALSE. Terminating.`);
           }
           return;
         }
@@ -458,14 +496,14 @@ export default function MemoryArchitect() {
 
       if (line === '{') {
         setCurrentLine(prev => prev + 1);
-        setStatusMessage("SCOPE_ENTER: Opening memory segment.");
+        logMessage("SCOPE_ENTER: Opening memory segment.");
         return;
       }
 
       if ((line.includes('void ') || line.includes('int ')) && line.includes('(') && !line.includes('=')) {
         const funcName = line.match(/(?:void|int)\s+(\w+)/)?.[1] || "main";
         pushFrame(funcName);
-        setStatusMessage(`ENTER_PROC: Frame allocated for '${funcName}'. LIFO growth.`);
+        logMessage(`ENTER_PROC: Frame allocated for '${funcName}'. LIFO growth.`);
         setCurrentLine(prev => prev + 1);
         return;
       } 
@@ -484,11 +522,11 @@ export default function MemoryArchitect() {
           });
           formattedVal += '}';
           updateOrAddVariable(name, formattedVal, 'array');
-          setStatusMessage(`ALLOC: Array '${name}' of ${vals.length} elements placed on stack.`);
+          logMessage(`ALLOC: Array '${name}' of ${vals.length} elements placed on stack.`);
         } else if (simpleAssignMatch && stack.length > 0) {
           const [, name, val] = simpleAssignMatch;
           updateOrAddVariable(name, evaluateExpression(val), 'value');
-          setStatusMessage(`SET: Variable '${name}' assigned value '${evaluateExpression(val)}'.`);
+          logMessage(`SET: Variable '${name}' assigned value '${evaluateExpression(val)}'.`);
         }
       } 
       else if ((line.startsWith('struct ') || line.startsWith('int ') || line.startsWith('char ')) && !line.includes('=')) {
@@ -498,12 +536,12 @@ export default function MemoryArchitect() {
         if (matchArray && stack.length > 0) {
           const [, structType, name, size] = matchArray;
           updateOrAddVariable(name, '{' + Array.from({length: parseInt(size) || 1}, (_, i) => `[${i}]: 0`).join(', ') + '}', 'array');
-          setStatusMessage(`ALLOC: Array '${name}' of space ${parseInt(size)} units.`);
+          logMessage(`ALLOC: Array '${name}' of space ${parseInt(size)} units.`);
         } else if (matchSimple && stack.length > 0) {
           const name = matchSimple[2] || matchSimple[1]; 
           const typeName = line.startsWith('struct ') ? 'struct' : 'value';
           updateOrAddVariable(name, '0', typeName);
-          setStatusMessage(`ALLOC: Stack variable '${name}' initialized to 0.`);
+          logMessage(`ALLOC: Stack variable '${name}' initialized to 0.`);
         }
       }
       else if (line.includes('=') && !line.includes('malloc')) {
@@ -526,7 +564,7 @@ export default function MemoryArchitect() {
           
           const evaluated = evaluateExpression(val);
           updateOrAddVariable(name, evaluated);
-          setStatusMessage(`UPDATE: '${name}' updated to '${evaluated}'.`);
+          logMessage(`UPDATE: '${name}' updated to '${evaluated}'.`);
         }
       }
       else if (line.includes('malloc')) {
@@ -534,7 +572,7 @@ export default function MemoryArchitect() {
         const ptrMatch = line.match(/\*?(\w+)\s*=/);
         const ptrName = ptrMatch ? ptrMatch[1] : undefined;
         allocateHeap(isArrayAddress ? 'array' : 'struct', ptrName);
-        setStatusMessage(`MALLOC: dynamic memory requested.`);
+        logMessage(`MALLOC: dynamic memory requested.`);
       }
       else if (line.includes('free')) {
         if (heap.length > 0) {
@@ -546,11 +584,27 @@ export default function MemoryArchitect() {
         if (match) {
           let content = match[1];
           const argsStr = match[2] || "";
-          const args = argsStr.split(',').map(s => s.trim()).filter(Boolean);
+          const args: string[] = [];
+          let currentArg = "";
+          let parenDepth = 0;
+          for (let i = 0; i < argsStr.length; i++) {
+            const char = argsStr[i];
+            if (char === '(') parenDepth++;
+            else if (char === ')') parenDepth--;
+            
+            if (char === ',' && parenDepth === 0) {
+              args.push(currentArg.trim());
+              currentArg = "";
+            } else {
+              currentArg += char;
+            }
+          }
+          if (currentArg.trim()) args.push(currentArg.trim());
           
           args.forEach(arg => {
             let resolvedVal = evaluateExpression(arg);
-            if (arg.includes('.') || arg.includes('[')) {
+            // If it's a direct address-of or something evaluateExpression didn't catch for printf context
+            if (!arg.startsWith('&') && (arg.includes('.') || arg.includes('['))) {
                let lookupKey = arg;
                if (arg.includes('[')) {
                   const indexExpr = arg.match(/\[([^\]]+)\]/)?.[1];
@@ -567,9 +621,9 @@ export default function MemoryArchitect() {
                   resolvedVal = valMatch ? valMatch[1] : '???';
                }
             }
-            content = content.replace(/%d|%s|%c/, resolvedVal);
+            content = content.replace(/%d|%u|%p|%s|%c|%f|%x/, resolvedVal);
           });
-          setStatusMessage(`STDOUT: "${content}"`);
+          logMessage(`STDOUT: "${content}"`);
         }
       }
       else if (line.startsWith('scanf')) {
@@ -586,13 +640,13 @@ export default function MemoryArchitect() {
           setInputTarget({ name: varName, type: 'int' });
           setIsAwaitingInput(true);
           setIsAutoStepping(false);
-          setStatusMessage(`WAIT_INPUT: Kernel requesting data for '${varName}'...`);
+          logMessage(`WAIT_INPUT: Kernel requesting data for '${varName}'...`);
           return;
         }
       }
       else if (line.startsWith('return')) {
         popFrame();
-        setStatusMessage("EXIT_PROC: Frame popped. Return successful.");
+        logMessage("EXIT_PROC: Frame popped. Return successful.");
       }
       else if (line.startsWith('}')) {
         const currentLoop = loopStack[loopStack.length - 1];
@@ -609,7 +663,7 @@ export default function MemoryArchitect() {
                if (v) {
                   const newVal = (parseInt(v.value) + 1).toString();
                   updateOrAddVariable(varName, newVal);
-                  setStatusMessage(`LOOP_INCR: '${varName}' is now ${newVal}. Re-evaluating condition...`);
+                  logMessage(`LOOP_INCR: '${varName}' is now ${newVal}. Re-evaluating condition...`);
                }
             } else if (incr.includes('--')) {
                const varName = incr.replace('--', '').trim();
@@ -624,21 +678,22 @@ export default function MemoryArchitect() {
         
         if (stack.length > 0) {
           popFrame();
-          setStatusMessage("SCOPE_EXIT: Frame removed.");
+          logMessage("SCOPE_EXIT: Frame removed.");
         }
       }
 
       setCurrentLine(prev => prev + 1);
     } catch (e) {
       console.error(e);
-      setStatusMessage(`EXCEPTION: ${e instanceof Error ? e.message : 'Unknown error during execution'}`);
+      logMessage(`EXCEPTION: ${e instanceof Error ? e.message : 'Unknown error during execution'}`);
       setIsAutoStepping(false);
     }
   }, [code, currentLine, evaluateExpression, loopStack, stack, pushFrame, popFrame, updateOrAddVariable, heap]);
 
 
   useEffect(() => {
-    if (isAutoStepping && currentLine >= 0) {
+    if (isAutoStepping && (currentLine >= 0 || currentLine === -1)) {
+      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
       stepTimerRef.current = setTimeout(() => {
         stepCode();
       }, 600);
@@ -659,7 +714,7 @@ export default function MemoryArchitect() {
       setLoopStack([]);
       setCurrentLine(0);
       setIsAutoStepping(true);
-      setStatusMessage("COMPILING... KERNEL_START");
+      logMessage("COMPILING... KERNEL_START");
     }, 50);
   };
 
@@ -677,22 +732,7 @@ export default function MemoryArchitect() {
   useEffect(() => {
     const logContainer = logEndRef.current?.parentElement;
     if (logContainer) logContainer.scrollTop = logContainer.scrollHeight;
-  }, [statusMessage, stack]);
-
-  useEffect(() => {
-    const links: PointerLink[] = [];
-    stack.forEach(frame => {
-      frame.variables.forEach(v => {
-        if (v.type === 'pointer' && v.targetId) {
-          const target = heap.find(h => h.id === v.targetId);
-          if (target) {
-            links.push({ fromId: `ptr-src-${v.id}`, toId: `heap-dest-${v.targetId}`, color: target.color });
-          }
-        }
-      });
-    });
-    setPointerLinks(links);
-  }, [stack, heap]);
+  }, [history]);
 
   const allocateHeap = useCallback((type: 'struct' | 'array' | 'image', ptrName?: string) => {
     if (stack.length === 0) return;
@@ -739,115 +779,260 @@ export default function MemoryArchitect() {
 
   const freeHeap = (id: string) => {
     setHeap(prev => prev.filter(obj => obj.id !== id));
-    setStatusMessage(`FREE: Memory at target address released.`);
+    logMessage(`FREE: Memory at target address released.`);
   };
 
   return (
-    <div ref={containerRef} className="h-screen bg-[#070708] text-slate-300 font-sans selection:bg-blue-500/30 overflow-hidden relative">
-      <div className="fixed inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:32px_32px] pointer-events-none opacity-[0.15]" />
-      <div className="fixed inset-0 bg-[linear-gradient(to_bottom,transparent,rgba(7,7,8,0.8))] pointer-events-none" />
+    <main className={`min-h-screen flex flex-col font-sans transition-colors duration-500 overflow-hidden ${
+      theme === 'dark' ? 'bg-[#070708] text-slate-300' : 'bg-[#EFEEEA] text-slate-800'
+    }`}>
+      {/* Background Accents */}
+      {theme === 'dark' ? (
+        <>
+          <div className="fixed inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:32px_32px] pointer-events-none opacity-[0.15]" />
+          <div className="fixed inset-0 bg-[linear-gradient(to_bottom,transparent,rgba(7,7,8,0.8))] pointer-events-none" />
+        </>
+      ) : (
+        <div className="fixed inset-0 bg-[radial-gradient(#d1d5db_1px,transparent_1px)] [background-size:32px_32px] pointer-events-none opacity-40" />
+      )}
 
-      {isMounted && <PointerOverlay links={pointerLinks} containerRef={containerRef} />}
+      {isMounted && <PointerOverlay theme={theme} stack={stack} heap={heap} containerRef={containerRef} />}
 
-      <header className="relative z-10 border-b border-white/5 bg-black/40 backdrop-blur-xl px-6 py-4 flex items-center justify-between">
+      <header className={`relative z-40 border-b px-6 py-3 flex items-center justify-between backdrop-blur-xl ${
+        theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/60 shadow-sm'
+      }`}>
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-blue-500/20 border border-blue-500/50 rounded-lg flex items-center justify-center">
-            <Cpu className="text-blue-400" size={24} />
+          <div className={`p-2 rounded-none border ${theme === 'dark' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-600/10 border-blue-600/20 text-blue-600'}`}>
+            <Cpu size={20} strokeWidth={2.5} />
           </div>
           <div>
-            <h1 className="text-lg font-bold tracking-tighter text-white flex items-center gap-2 font-sans">
-              ARCHITECT.MEM <span className="text-blue-500 text-[10px] px-2 py-0.5 border border-blue-500/40 rounded bg-blue-500/5 font-mono">CORE_V2.5</span>
+            <h1 className={`text-lg font-black tracking-tighter uppercase ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+              C_Compiler_Visualizer <span className="text-[9px] bg-emerald-500/20 text-emerald-500 px-1.5 py-0.5 rounded-none ml-2 align-middle border border-emerald-500/30">v2.1</span>
             </h1>
-            <div className="flex items-center gap-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <p className="text-[9px] text-slate-500 uppercase tracking-[0.3em] font-mono">Kernel Status: Online</p>
-            </div>
+            <p className="text-[9px] font-mono opacity-50 uppercase tracking-[0.2em]">Kernel-Level Memory Trace</p>
           </div>
         </div>
 
-        <nav className="flex bg-white/5 p-1 rounded-xl border border-white/10">
-          {[
-            { id: 'visualizer', label: 'Monitor', icon: Monitor },
-            { id: 'theory', label: 'Manual', icon: Workflow }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
-                activeTab === tab.id ? 'bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <tab.icon size={14} />
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        <div className="flex items-center gap-4">
+          <button 
+             onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
+             className={`p-2 rounded-none border transition-all hover:bg-opacity-80 active:scale-95 ${
+               theme === 'dark' 
+                 ? 'border-white/10 text-yellow-500 bg-white/5' 
+                 : 'border-black/10 text-orange-600 bg-black/5'
+             }`}
+             title="Toggle Interface Theme"
+          >
+            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          
+          <div className={`flex items-center gap-3 px-3 py-1.5 rounded-none border ${
+            theme === 'dark' ? 'bg-black/40 border-white/10' : 'bg-white/40 border-black/10'
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-none ${isAutoStepping ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-slate-400'}`} />
+            <span className="text-[9px] font-mono font-bold tracking-widest opacity-70 uppercase">
+              {isAutoStepping ? 'RUNNING' : 'IDLE'}
+            </span>
+          </div>
+        </div>
       </header>
 
-      <main className="relative z-10 max-w-[1920px] mx-auto p-4 lg:p-8 h-[calc(100vh-72px)] overflow-y-auto custom-scrollbar">
-        {activeTab === 'visualizer' ? (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-            <div className="lg:col-span-4 space-y-6">
+      <div className="flex-1 flex overflow-hidden relative z-10" ref={containerRef}>
+        <div className="flex-1 flex overflow-hidden">
+          <section className={`w-[450px] min-w-[400px] flex flex-col border-r transition-colors ${
+            theme === 'dark' ? 'border-white/10' : 'border-black/10'
+          }`}>
+            <div className={`flex items-center gap-2 p-3 border-b ${
+              theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/20'
+            }`}>
+              <Terminal size={12} className="text-blue-500" />
+              <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Source_Buffer</span>
+            </div>
+            <div className="flex-1 overflow-hidden relative flex flex-col">
               <CodeEditor 
-                code={code} setCode={setCode} currentLine={currentLine}
-                runCode={runCode} stepCode={stepCode}
-                isAutoStepping={isAutoStepping} setIsAutoStepping={setIsAutoStepping}
-                isAwaitingInput={isAwaitingInput} userInput={userInput}
-                setUserInput={setUserInput} inputTarget={inputTarget}
-                handleInputSubmit={handleInputSubmit}
+                code={code} setCode={setCode} currentLine={currentLine} theme={theme}
               />
-              <section className="bg-black border border-white/5 rounded-2xl p-6 overflow-hidden relative shadow-2xl">
-                <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">Console_Kernel</h3>
-                <div className="space-y-1 h-36 overflow-y-auto custom-scrollbar pr-2 font-mono text-[10px]">
-                  <div className="flex gap-2 text-blue-400/60 pb-1 border-b border-white/5 mb-2">
-                    <span className="opacity-40 uppercase">Timestamp</span> <span className="uppercase">Event_Log</span>
+            </div>
+          </section>
+
+          <section className={`flex-1 flex flex-col overflow-y-auto custom-scrollbar transition-colors ${
+            theme === 'dark' ? 'bg-black/20' : 'bg-[#EFEEEA]'
+          }`}>
+            <div className={`flex items-center justify-between p-3 border-b sticky top-0 z-20 backdrop-blur-md ${
+              theme === 'dark' ? 'border-white/10 bg-black/60' : 'border-black/10 bg-white/60'
+            }`}>
+              <div className="flex items-center gap-2">
+                <Database size={12} className="text-emerald-500" />
+                <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Memory_Sector</span>
+              </div>
+              <div className="flex gap-4">
+                 <div className="flex items-center gap-2">
+                   <div className="w-2 h-2 rounded-none bg-blue-500/50" />
+                   <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Stack</span>
+                 </div>
+                 <div className="flex items-center gap-2">
+                   <div className="w-2 h-2 rounded-none bg-emerald-500/50" />
+                   <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Heap</span>
+                 </div>
+              </div>
+            </div>
+            
+            <div className="p-8 space-y-8 flex flex-col items-center">
+              <div className="w-full max-w-6xl grid grid-cols-1 xl:grid-cols-2 gap-8 relative">
+                 <StackVisualizer theme={theme} stack={stack} />
+                 <HeapVisualizer theme={theme} heap={heap} freeHeap={freeHeap} />
+              </div>
+            </div>
+          </section>
+
+          <section className={`w-[380px] min-w-[350px] flex flex-col border-l transition-colors ${
+            theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'
+          }`}>
+            <div className={`flex items-center gap-2 p-3 border-b ${
+              theme === 'dark' ? 'border-white/10 bg-black/20' : 'border-black/5 bg-white/20'
+            }`}>
+              <Activity size={12} className="text-orange-500" />
+              <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Pipeline_Monitoring</span>
+            </div>
+            
+            <div className="p-5 space-y-5 flex-1 overflow-y-auto custom-scrollbar">
+              {/* IO BUS SECTION - REPOSITIONED ABOVE CONSOLE */}
+              <AnimatePresence>
+                {isAwaitingInput && (
+                  <motion.section 
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className={`border p-5 shadow-2xl relative overflow-hidden rounded-none ${
+                      theme === 'dark' ? 'bg-orange-500/[0.08] border-orange-500/30' : 'bg-orange-600/[0.05] border-orange-600/30'
+                    }`}
+                  >
+                    <h3 className="text-[9px] font-black text-orange-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                      <Activity size={12} className="animate-pulse" /> IO_BUS_WAIT: STDIN
+                    </h3>
+                    <div className="flex flex-col gap-3 relative z-10">
+                      <div>
+                        <p className={`text-[10px] font-bold uppercase mb-2 ${theme === 'dark' ? 'text-orange-200/60' : 'text-orange-900/60'}`}>
+                          Input_Target: <span className="text-orange-500 font-mono">*{inputTarget?.name}</span>
+                        </p>
+                        <input
+                          type="text"
+                          id={inputTarget?.name}
+                          value={userInput}
+                          onChange={(e) => setUserInput(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleInputSubmit(e as any)}
+                          autoFocus
+                          placeholder="int val..."
+                          className={`w-full bg-black/40 border p-3 rounded-none font-mono text-xs focus:outline-none focus:ring-1 transition-all placeholder:opacity-20 ${
+                            theme === 'dark' 
+                              ? 'border-white/10 text-emerald-400 focus:ring-emerald-500/40' 
+                              : 'border-black/10 text-emerald-600 focus:ring-emerald-600/40'
+                          }`}
+                        />
+                      </div>
+                      <button
+                        onClick={(e) => handleInputSubmit(e as any)}
+                        className="bg-orange-600 hover:bg-orange-500 text-white p-2.5 rounded-none text-[9px] font-black uppercase tracking-widest active:scale-95 transition-all"
+                      >
+                        Commit_Data
+                      </button>
+                    </div>
+                  </motion.section>
+                )}
+              </AnimatePresence>
+
+              <section className={`p-5 overflow-hidden relative shadow-2xl border transition-all rounded-none ${
+                theme === 'dark' ? 'bg-[#121212] border-white/10' : 'bg-slate-900 border-black/10'
+              }`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-[9px] font-semibold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <Tv size={12} /> Console_Log
+                  </h3>
+                  <div className="flex gap-1">
+                    <div className="w-1 h-1 bg-red-500/50" />
+                    <div className="w-1 h-1 bg-amber-500/50" />
+                    <div className="w-1 h-1 bg-emerald-500/50" />
                   </div>
-                  <div className="flex gap-2 items-start py-0.5">
-                    <span className="opacity-30">[{isMounted ? new Date().toLocaleTimeString() : '--:--'}]</span>
-                    <span className="text-blue-400">{statusMessage}</span>
-                  </div>
+                </div>
+                <div className="space-y-1.5 h-[320px] overflow-y-auto custom-scrollbar pr-3 font-mono text-[10px] leading-relaxed">
+                  {history.map((msg, i) => (
+                    <div key={i} className="flex gap-3 items-start py-1 border-b border-white/5 last:border-0 opacity-80 hover:opacity-100 transition-opacity">
+                      <span className="opacity-20 text-[9px] mt-0.5 shrink-0">{(i+1).toString().padStart(2, '0')}</span>
+                      <span className={`${
+                        msg.includes('ERROR') || msg.includes('EXCEPTION') ? 'text-red-400' : 
+                        msg.includes('STDOUT') ? (theme === 'dark' ? 'text-white' : 'text-slate-100') : 
+                        (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-300')
+                      } break-all`}>
+                        {msg}
+                      </span>
+                    </div>
+                  ))}
                   <div ref={logEndRef} className="h-0" />
                 </div>
               </section>
-              <section className="bg-white/[0.03] border border-white/10 rounded-2xl p-6 backdrop-blur-sm">
-                <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2 text-blue-400/80">
+
+              <section className={`border p-5 backdrop-blur-md transition-all shadow-xl rounded-none ${
+                theme === 'dark' 
+                  ? 'bg-white/[0.03] border-white/10' 
+                  : 'bg-black/[0.03] border-black/10'
+              }`}>
+                <h3 className={`text-[9px] font-bold uppercase tracking-[0.2em] mb-5 flex items-center gap-2 ${
+                  theme === 'dark' ? 'text-blue-400' : 'text-blue-600'
+                }`}>
                   <Wrench size={12} /> Execution_Control
                 </h3>
-                <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
                   <button 
-                    onClick={() => pushFrame(`worker_${stack.length}`)}
-                    className="w-full flex items-center justify-between px-4 py-3 bg-blue-500/10 border border-blue-500/30 text-blue-400 rounded-xl hover:bg-blue-500/20 transition-all font-bold uppercase text-[11px]"
+                    onClick={runCode}
+                    className={`flex flex-col items-center gap-2 p-4 border transition-all col-span-2 group rounded-none ${
+                      theme === 'dark' ? 'border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-400' 
+                                       : 'border-emerald-600/20 bg-emerald-600/5 hover:bg-emerald-600/10 text-emerald-600'
+                    }`}
                   >
-                    <span>Push Frame</span> <Plus size={16} />
+                    <Play className="animate-pulse" size={18} />
+                    <span className="text-[9px] font-black uppercase tracking-widest">Compile_&_Run</span>
                   </button>
                   <button 
-                    onClick={popFrame}
-                    className="w-full flex items-center justify-between px-4 py-3 bg-slate-500/10 border border-white/10 text-slate-400 rounded-xl hover:bg-slate-500/20 transition-all font-bold uppercase text-[11px]"
+                    onClick={stepCode}
+                    disabled={isAutoStepping || isAwaitingInput}
+                    className={`flex flex-col items-center gap-2 p-4 border transition-all disabled:opacity-20 rounded-none ${
+                      theme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-white/10' : 'border-black/10 bg-white shadow-sm hover:bg-slate-50'
+                    }`}
                   >
-                    <span>Pop Frame</span> <Minus size={16} />
+                    <Play className="text-blue-500" size={18} />
+                    <span className="text-[8px] font-bold uppercase tracking-widest">Step_Next</span>
                   </button>
-                </div>
-                <div className="mt-10">
-                  <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-2 text-emerald-400/80">
-                    <Database size={12} /> Dyn_Allocation
-                  </h3>
-                  <div className="grid grid-cols-1 gap-3">
-                    {['struct', 'array', 'image'].map(type => (
-                      <button key={type} onClick={() => allocateHeap(type as any)} className="flex items-center justify-between px-4 py-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-xl hover:bg-emerald-500/20 transition-all font-bold uppercase text-[11px]">
-                        <span>Malloc_{type}</span> <Zap size={14} className="opacity-40" />
-                      </button>
-                    ))}
-                  </div>
+                  <button 
+                    onClick={() => setIsAutoStepping(!isAutoStepping)}
+                    disabled={isAwaitingInput}
+                    className={`flex flex-col items-center gap-2 p-4 border transition-all rounded-none ${
+                      isAutoStepping 
+                        ? 'bg-red-500/10 border-red-500/20 text-red-500' 
+                        : theme === 'dark' ? 'border-white/10 bg-white/5 hover:border-emerald-500/20' 
+                                         : 'border-black/10 bg-white shadow-sm'
+                    }`}
+                  >
+                    {isAutoStepping ? <Square size={18} /> : <FastForward size={18} className="text-emerald-500" />}
+                    <span className="text-[8px] font-bold uppercase tracking-widest">
+                      {isAutoStepping ? 'Halt' : 'Auto'}
+                    </span>
+                  </button>
+                  <button 
+                    onClick={resetCompiler}
+                    className={`flex flex-col items-center gap-2 p-4 border transition-all col-span-2 group rounded-none ${
+                      theme === 'dark' ? 'border-white/10 bg-white/5 hover:bg-red-500/10' 
+                                       : 'border-black/10 bg-white shadow-sm hover:bg-red-50'
+                    }`}
+                  >
+                    <RefreshCw className="text-slate-400 group-hover:rotate-180 transition-transform duration-700" size={18} />
+                    <span className="text-[8px] font-bold uppercase tracking-widest">Clear_All</span>
+                  </button>
                 </div>
               </section>
             </div>
-            <StackVisualizer stack={stack} />
-            <HeapVisualizer heap={heap} freeHeap={freeHeap} />
-          </div>
-        ) : (
-          <div className="text-center py-20 opacity-30 italic"><Tv size={48} className="mx-auto mb-4" /><p>System Manual in offline mode.</p></div>
-        )}
-      </main>
-    </div>
+          </section>
+        </div>
+      </div>
+    </main>
   );
 }

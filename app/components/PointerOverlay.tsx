@@ -1,94 +1,152 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion } from 'motion/react';
-import { PointerLink } from '../types/memory';
+import { StackFrame, HeapObject } from '../types/memory';
 
 interface PointerOverlayProps {
-  links: PointerLink[];
+  stack: StackFrame[];
+  heap: HeapObject[];
   containerRef: React.RefObject<HTMLDivElement | null>;
+  theme?: 'dark' | 'light';
 }
 
-const PointerOverlay = ({ links, containerRef }: PointerOverlayProps) => {
-  const [paths, setPaths] = useState<{d: string, color: string, id: string}[]>([]);
+interface Connection {
+  id: string;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  color: string;
+}
+
+const PointerOverlay = ({ stack, heap, containerRef, theme = 'dark' }: PointerOverlayProps) => {
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const updateConnections = () => {
+    if (!containerRef.current) return;
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const newConnections: Connection[] = [];
+
+    // Find all pointers on stack
+    stack.forEach(frame => {
+      frame.variables.forEach(v => {
+        if (v.type === 'pointer' && v.value && v.value.startsWith('0x')) {
+          const srcEl = document.getElementById(`p-src-${v.id}`);
+          const targetAddr = v.value.toUpperCase();
+          const destEl = document.getElementById(`p-addr-${targetAddr}`);
+
+          if (srcEl && destEl) {
+            const srcRect = srcEl.getBoundingClientRect();
+            const destRect = destEl.getBoundingClientRect();
+
+            // Calculate center points relative to container
+            // We use the container's coordinates to ensure arrows move with content
+            newConnections.push({
+              id: `${v.id}-${v.value}`,
+              startX: srcRect.right - containerRect.left,
+              startY: srcRect.top + srcRect.height / 2 - containerRect.top,
+              endX: destRect.left - containerRect.left,
+              endY: destRect.top + destRect.height / 2 - containerRect.top,
+              color: '#10b981' // emerald-500
+            });
+          }
+        }
+      });
+    });
+
+    setConnections(newConnections);
+  };
 
   useEffect(() => {
-    let animationFrameId: number;
-
-    const updatePaths = () => {
-      if (!containerRef.current) return;
-      const containerRect = containerRef.current.getBoundingClientRect();
-
-      const newPaths = links.map(link => {
-        const srcEl = document.getElementById(link.fromId);
-        const destEl = document.getElementById(link.toId);
-
-        if (srcEl && destEl) {
-          const srcRect = srcEl.getBoundingClientRect();
-          const destRect = destEl.getBoundingClientRect();
-
-          // Offset from container's top-left
-          const startX = srcRect.right - containerRect.left;
-          const startY = srcRect.top + (srcRect.height / 2) - containerRect.top;
-          const endX = destRect.left - containerRect.left;
-          const endY = destRect.top + (destRect.height / 2) - containerRect.top;
-
-          // Control points for a smooth S-curve
-          const dist = Math.abs(endX - startX);
-          const cpX = startX + dist * 0.4;
-
-          return {
-            id: `${link.fromId}-${link.toId}`,
-            d: `M ${startX} ${startY} C ${cpX} ${startY}, ${endX - dist * 0.4} ${endY}, ${endX} ${endY}`,
-            color: link.color
-          };
-        }
-        return null;
-      }).filter(Boolean) as {d: string, color: string, id: string}[];
-
-      setPaths(newPaths);
-      animationFrameId = requestAnimationFrame(updatePaths);
+    updateConnections();
+    
+    // Use requestAnimationFrame for smoother updates during scroll/resize
+    let frameId: number;
+    const loop = () => {
+      updateConnections();
+      frameId = requestAnimationFrame(loop);
     };
-
-    animationFrameId = requestAnimationFrame(updatePaths);
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [links, containerRef]);
+    
+    frameId = requestAnimationFrame(loop);
+    window.addEventListener('resize', updateConnections);
+    
+    // Also listen to scroll events on any container that might move elements
+    const containers = document.querySelectorAll('.overflow-y-auto');
+    containers.forEach(c => c.addEventListener('scroll', updateConnections));
+    
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', updateConnections);
+      containers.forEach(c => c.removeEventListener('scroll', updateConnections));
+    };
+  }, [stack, heap, containerRef]);
 
   return (
-    <svg className="absolute inset-0 pointer-events-none z-[60] w-full h-full overflow-visible">
+    <svg 
+      ref={svgRef}
+      className="absolute inset-0 pointer-events-none z-50 w-full h-full"
+      style={{ overflow: 'visible' }}
+    >
       <defs>
-        {paths.map((p) => (
-          <filter key={`glow-${p.id}`} id={`glow-${p.id}`}>
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feComposite in="SourceGraphic" in2="blur" operator="over" />
-          </filter>
-        ))}
-        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orientation="auto">
-          <polygon points="0 0, 10 3.5, 0 7" fill="currentColor" />
+        <marker
+          id="arrowhead"
+          markerWidth="10"
+          markerHeight="7"
+          refX="9"
+          refY="3.5"
+          orient="auto"
+        >
+          <polygon points="0 0, 10 3.5, 0 7" fill="#10b981" />
         </marker>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
+          <feMerge>
+            <feMergeNode in="coloredBlur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
       </defs>
-      {paths.map((path) => (
-        <g key={path.id}>
-          <motion.path
-            initial={{ pathLength: 0, opacity: 0 }}
-            animate={{ pathLength: 1, opacity: 0.5 }}
-            d={path.d}
-            stroke={path.color}
-            strokeWidth="1.5"
-            fill="none"
-            strokeDasharray="4 4"
-            filter={`url(#glow-${path.id})`}
-            className="opacity-40"
-          />
-          <circle 
-            cx={path.d.split(' ').pop()?.split(',')[0]} 
-            cy={path.d.split(' ').pop()} 
-            r="3" 
-            fill={path.color}
-            className="animate-pulse"
-          />
-        </g>
-      ))}
+      {connections.map(conn => {
+        const dx = conn.endX - conn.startX;
+        const dy = conn.endY - conn.startY;
+        
+        // Dynamic control points based on distance and direction
+        let cx1, cy1, cx2, cy2;
+        
+        if (Math.abs(dx) < 20) {
+          // Same column: curve out to the right
+          const offset = 80;
+          cx1 = conn.startX + offset;
+          cy1 = conn.startY;
+          cx2 = conn.endX + offset;
+          cy2 = conn.endY;
+        } else {
+          // Different columns: smooth S-curve
+          cx1 = conn.startX + dx * 0.4;
+          cy1 = conn.startY;
+          cx2 = conn.startX + dx * 0.6;
+          cy2 = conn.endY;
+        }
+
+        return (
+          <g key={conn.id}>
+            <motion.path
+              initial={{ pathLength: 0, opacity: 0 }}
+              animate={{ pathLength: 1, opacity: 0.6 }}
+              d={`M ${conn.startX} ${conn.startY} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${conn.endX} ${conn.endY}`}
+              fill="none"
+              stroke={conn.color}
+              strokeWidth="1.5"
+              strokeDasharray="4,2"
+              markerEnd="url(#arrowhead)"
+              filter="url(#glow)"
+            />
+            <circle cx={conn.startX} cy={conn.startY} r="2.5" fill={conn.color} opacity="0.8" />
+          </g>
+        );
+      })}
     </svg>
   );
 };
