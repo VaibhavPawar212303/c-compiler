@@ -7,6 +7,7 @@ import { StackFrame, HeapObject } from '../types/memory';
 interface PointerOverlayProps {
   stack: StackFrame[];
   heap: HeapObject[];
+  globals: any[];
   containerRef: React.RefObject<HTMLDivElement | null>;
   theme?: 'dark' | 'light';
 }
@@ -20,7 +21,7 @@ interface Connection {
   color: string;
 }
 
-const PointerOverlay = ({ stack, heap, containerRef, theme = 'dark' }: PointerOverlayProps) => {
+const PointerOverlay = ({ stack, heap, globals, containerRef, theme = 'dark' }: PointerOverlayProps) => {
   const [connections, setConnections] = useState<Connection[]>([]);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -29,31 +30,43 @@ const PointerOverlay = ({ stack, heap, containerRef, theme = 'dark' }: PointerOv
     const containerRect = containerRef.current.getBoundingClientRect();
     const newConnections: Connection[] = [];
 
-    // Find all pointers on stack
+    // Find all pointers (Stack + Globals)
+    const allPointers: {id: string, value: string}[] = [];
     stack.forEach(frame => {
       frame.variables.forEach(v => {
         if (v.type === 'pointer' && v.value && v.value.startsWith('0x')) {
-          const srcEl = document.getElementById(`p-src-${v.id}`);
-          const targetAddr = v.value.toUpperCase();
-          const destEl = document.getElementById(`p-addr-${targetAddr}`);
-
-          if (srcEl && destEl) {
-            const srcRect = srcEl.getBoundingClientRect();
-            const destRect = destEl.getBoundingClientRect();
-
-            // Calculate center points relative to container
-            // We use the container's coordinates to ensure arrows move with content
-            newConnections.push({
-              id: `${v.id}-${v.value}`,
-              startX: srcRect.right - containerRect.left,
-              startY: srcRect.top + srcRect.height / 2 - containerRect.top,
-              endX: destRect.left - containerRect.left,
-              endY: destRect.top + destRect.height / 2 - containerRect.top,
-              color: '#10b981' // emerald-500
-            });
-          }
+          allPointers.push({ id: v.id, value: v.value });
         }
       });
+    });
+
+    globals.forEach(g => {
+      if (g.type === 'pointer' && g.value && g.value.startsWith('0x')) {
+        allPointers.push({ id: g.id, value: g.value });
+      }
+    });
+
+    allPointers.forEach(p => {
+      const srcEl = document.getElementById(`p-src-${p.id}`);
+      const targetAddr = p.value.toUpperCase();
+      const destEl = document.getElementById(`p-addr-${targetAddr}`);
+
+      if (srcEl && destEl) {
+        const srcRect = srcEl.getBoundingClientRect();
+        const destRect = destEl.getBoundingClientRect();
+
+        // Calculate connection points
+        // Source: Horizontal center of the pointer value
+        // Target: Left edge center of the destination address
+        newConnections.push({
+          id: `${p.id}-${p.value}`,
+          startX: srcRect.left + (srcRect.width / 2) - containerRect.left,
+          startY: srcRect.top + (srcRect.height / 2) - containerRect.top,
+          endX: destRect.left - containerRect.left - 5, // 5px offset for arrowhead
+          endY: destRect.top + (destRect.height / 2) - containerRect.top,
+          color: '#10b981' // emerald-500
+        });
+      }
     });
 
     setConnections(newConnections);
@@ -72,7 +85,6 @@ const PointerOverlay = ({ stack, heap, containerRef, theme = 'dark' }: PointerOv
     frameId = requestAnimationFrame(loop);
     window.addEventListener('resize', updateConnections);
     
-    // Also listen to scroll events on any container that might move elements
     const containers = document.querySelectorAll('.overflow-y-auto');
     containers.forEach(c => c.addEventListener('scroll', updateConnections));
     
@@ -92,58 +104,73 @@ const PointerOverlay = ({ stack, heap, containerRef, theme = 'dark' }: PointerOv
       <defs>
         <marker
           id="arrowhead"
-          markerWidth="10"
-          markerHeight="7"
-          refX="9"
-          refY="3.5"
+          markerWidth="8"
+          markerHeight="8"
+          refX="7"
+          refY="4"
           orient="auto"
         >
-          <polygon points="0 0, 10 3.5, 0 7" fill="#10b981" />
+          <path d="M 0 0 L 8 4 L 0 8 Z" fill="#10b981" />
         </marker>
-        <filter id="glow">
-          <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
-          <feMerge>
-            <feMergeNode in="coloredBlur"/>
-            <feMergeNode in="SourceGraphic"/>
-          </feMerge>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="2" result="blur" />
+          <feComposite in="SourceGraphic" in2="blur" operator="over" />
         </filter>
       </defs>
       {connections.map(conn => {
-        const dx = conn.endX - conn.startX;
-        const dy = conn.endY - conn.startY;
-        
-        // Dynamic control points based on distance and direction
-        let cx1, cy1, cx2, cy2;
-        
-        if (Math.abs(dx) < 20) {
-          // Same column: curve out to the right
-          const offset = 80;
-          cx1 = conn.startX + offset;
-          cy1 = conn.startY;
-          cx2 = conn.endX + offset;
-          cy2 = conn.endY;
-        } else {
-          // Different columns: smooth S-curve
-          cx1 = conn.startX + dx * 0.4;
-          cy1 = conn.startY;
-          cx2 = conn.startX + dx * 0.6;
-          cy2 = conn.endY;
-        }
-
         return (
           <g key={conn.id}>
-            <motion.path
+            {/* Background Glow */}
+            <motion.line
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.1 }}
+              x1={conn.startX}
+              y1={conn.startY}
+              x2={conn.endX}
+              y2={conn.endY}
+              stroke={conn.color}
+              strokeWidth="6"
+              strokeLinecap="round"
+            />
+            {/* Main Straight Line */}
+            <motion.line
               initial={{ pathLength: 0, opacity: 0 }}
-              animate={{ pathLength: 1, opacity: 0.6 }}
-              d={`M ${conn.startX} ${conn.startY} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${conn.endX} ${conn.endY}`}
-              fill="none"
+              animate={{ pathLength: 1, opacity: 0.8 }}
+              x1={conn.startX}
+              y1={conn.startY}
+              x2={conn.endX}
+              y2={conn.endY}
               stroke={conn.color}
               strokeWidth="1.5"
-              strokeDasharray="4,2"
+              strokeLinecap="round"
               markerEnd="url(#arrowhead)"
               filter="url(#glow)"
+              transition={{ 
+                pathLength: { duration: 0.5, ease: "easeOut" },
+                opacity: { duration: 0.3 }
+              }}
             />
-            <circle cx={conn.startX} cy={conn.startY} r="2.5" fill={conn.color} opacity="0.8" />
+            {/* Pulsing Signal Effect */}
+            <motion.line
+              x1={conn.startX}
+              y1={conn.startY}
+              x2={conn.endX}
+              y2={conn.endY}
+              fill="none"
+              stroke="white"
+              strokeWidth="1"
+              strokeDasharray="4, 16"
+              strokeLinecap="round"
+              initial={{ strokeDashoffset: 0, opacity: 0 }}
+              animate={{ strokeDashoffset: -20, opacity: 0.3 }}
+              transition={{ 
+                repeat: Infinity, 
+                duration: 1, 
+                ease: "linear"
+              }}
+            />
+            {/* Source Point */}
+            <circle cx={conn.startX} cy={conn.startY} r="3" fill={conn.color} />
           </g>
         );
       })}

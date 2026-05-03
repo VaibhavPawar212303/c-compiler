@@ -58,43 +58,57 @@ export default function MemoryArchitect() {
   const [userInput, setUserInput] = useState("");
   const [inputTarget, setInputTarget] = useState<{name: string, type: string} | null>(null);
   const [loopStack, setLoopStack] = useState<LoopState[]>([]);
+  const [returnStack, setReturnStack] = useState<{line: number, swallowed: number}[]>([]);
   const [swallowedLines, setSwallowedLines] = useState(1);
+  const [errors, setErrors] = useState<{ line: number, message: string }[]>([]);
   
+  const [globals, setGlobals] = useState<any[]>([]);
   const [code, setCode] = useState(`#include <stdio.h>
+
+// Global variables are accessible everywhere
+void swap(int *, int *);
 
 int main() {
   int a = 10;
-  int *b;
-  b = &a;
+  int b = 20;
 
-  printf("Address of a  : %u\n", &a);
-  printf("Value of a    : %d\n", a);
-  printf("Value of a    : %d\n", *(&a));
+  printf("Value of   a : %d\\n", a);
+  printf("Address of a : %u\\n", &a);
+  printf("Address of b : %u\\n", &b);
 
-  printf("Address of b  : %u\n", &b);
-  printf("Address of a  : %u\n", a);
-  printf("Address of a  : %d\n", b);
-  
-  if (b == &a) {
-    printf("Both have the same value");
-  } else {
-    printf("Both values are different");
-  }
+  swap(&a, &b);
 
+  printf("Value of a=%d and value of b=%d\\n", a, b);
   return 0;
-}`);
+}
+
+void swap(int *x, int *y) {
+  int temp;
+  temp = *x;
+  *x = *y;
+  *y = temp;
+}
+`);
   const [currentLine, setCurrentLine] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const stepTimerRef = useRef<NodeJS.Timeout|null>(null);
 
-  const logMessage = useCallback((msg: string) => {
+  const logMessage = useCallback((msg: string, type: string = 'system') => {
     setHistory(prev => [...prev, msg].slice(-50)); // Keep last 50 messages
   }, []);
 
   useEffect(() => {
     setIsMounted(true);
-  }, []);
+    // Sanity check for escaped entities in code (might happen from copy-paste or previous bugs)
+    if (code.includes('&amp;') || code.includes('&lt;') || code.includes('&gt;')) {
+      const sanitized = code
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+      setCode(sanitized);
+    }
+  }, [code]);
 
   const pushFrame = useCallback((name: string) => {
     const baseAddress = 0x7FFFFFFF;
@@ -131,12 +145,46 @@ int main() {
   const resetCompiler = useCallback(() => {
     setStack([]);
     setHeap([]);
-    setCurrentLine(-1);
+    setGlobals([]);
+    setReturnStack([]);
+    setLoopStack([]);
+    
+    // Find main line and scan for globals before it
+    const lines = code.split('\n');
+    let mainIdx = -1;
+    const detectedGlobals: any[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].split('//')[0].split('/*')[0].trim();
+        
+        if (line.includes('int main(') || line.includes('void main(')) {
+            mainIdx = i;
+            break;
+        }
+
+        // Simple global detection
+        const globalMatch = line.match(/^(int|char|float|double)\s+([a-zA-Z_]\w*)\s*(?:=\s*(.*))?;$/);
+        if (globalMatch) {
+            const type = globalMatch[1];
+            const name = globalMatch[2];
+            const initialVal = globalMatch[3] ? globalMatch[3].trim() : '0';
+            detectedGlobals.push({
+                id: Math.random().toString(),
+                name,
+                type: 'value',
+                value: initialVal,
+                address: `0x${(0x400000 + detectedGlobals.length * 4).toString(16).toUpperCase()}`,
+                size: 4
+            });
+        }
+    }
+    
+    setGlobals(detectedGlobals);
+    setCurrentLine(mainIdx !== -1 ? mainIdx : 0);
     setIsAutoStepping(false);
     setIsAwaitingInput(false);
-    setLoopStack([]);
-    logMessage("SYSTEM_RESET: Memory cleared. Waiting for execution buffer.");
-  }, [logMessage]);
+    logMessage(mainIdx !== -1 ? `SYSTEM_RESET: Entry_point found at line ${mainIdx + 1}. Detected ${detectedGlobals.length} globals.` : "SYSTEM_RESET: Entry_point 'main' NOT found! Starting from line 1.");
+  }, [code, logMessage]);
 
   const updateOrAddVariable = useCallback((name: string, value: string, type: 'value' | 'pointer' | 'struct' | 'array' = 'value') => {
     // Check if we are updating a heap object via dereference (e.g., p->x or *p)
@@ -145,100 +193,116 @@ int main() {
     
     if (isPtrAccess) {
       let ptrRoot = normalizedName.split('.')[0];
-      if (ptrRoot.startsWith('*')) ptrRoot = ptrRoot.substring(1);
+      let isExplicitDeref = false;
+      if (ptrRoot.startsWith('*')) {
+        ptrRoot = ptrRoot.substring(1);
+        isExplicitDeref = true;
+      }
       
       const currentFrame = stack[stack.length - 1];
       const ptrVar = currentFrame?.variables.find(v => v.name === ptrRoot);
       
-      if (ptrVar && ptrVar.type === 'pointer') {
+      if (ptrVar && (ptrVar.type === 'pointer' || ptrVar.value.startsWith('0x'))) {
          const targetAddr = ptrVar.value;
+         
+         // 1. Check Heap
          const heapObj = heap.find(h => h.address === targetAddr);
          if (heapObj) {
-           setHeap(prev => prev.map(h => {
-             if (h.id === heapObj.id) {
-               const subKey = normalizedName.replace(ptrRoot, '');
-               if (!subKey) return { ...h, value };
-               
-               let newValue = h.value;
-               if (newValue === '{}' || newValue === '0') newValue = '{}';
-               
-               const escapedSub = subKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-               const entryRegex = new RegExp(`\\${escapedSub}:\\s*[^,}]+`);
-               
-               if (newValue.match(entryRegex)) {
-                 newValue = newValue.replace(entryRegex, `${subKey}: ${value}`);
-               } else {
-                 if (newValue === '{}') newValue = `{${subKey}: ${value}}`;
-                 else newValue = newValue.replace('}', `, ${subKey}: ${value}}`);
-               }
-               return { ...h, value: newValue };
-             }
-             return h;
-           }));
-           return;
+            setHeap(prev => prev.map(h => {
+              if (h.id === heapObj.id) {
+                const subKey = normalizedName.replace(ptrRoot, '');
+                if (!subKey || isExplicitDeref) return { ...h, value };
+                
+                let newValue = h.value;
+                if (newValue === '{}' || newValue === '0') newValue = '{}';
+                
+                const escapedSub = subKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const entryRegex = new RegExp(`\\${escapedSub}:\\s*[^,}]+`);
+                
+                if (newValue.match(entryRegex)) {
+                  newValue = newValue.replace(entryRegex, `${subKey}: ${value}`);
+                } else {
+                  if (newValue === '{}') newValue = `{${subKey}: ${value}}`;
+                  else newValue = newValue.replace('}', `, ${subKey}: ${value}}`);
+                }
+                return { ...h, value: newValue };
+              }
+              return h;
+            }));
+            return;
          }
+
+         // 2. Check Stack (for local variable pointer targets)
+         let successStackUpdate = false;
+         setStack(prev => {
+            const next = [...prev];
+            for (let i = next.length - 1; i >= 0; i--) {
+                const targetVar = next[i].variables.find(v => v.address === targetAddr);
+                if (targetVar) {
+                    targetVar.value = value;
+                    successStackUpdate = true;
+                    break;
+                }
+            }
+            return next;
+         });
+         if (successStackUpdate) return;
       }
+    }
+
+    // Handle Global variable updates
+    if (stack.length === 0 || !stack[stack.length-1].variables.find(v => v.name === normalizedName)) {
+       const globalIdx = globals.findIndex(g => g.name === normalizedName);
+       if (globalIdx !== -1) {
+          setGlobals(prev => {
+            const next = [...prev];
+            next[globalIdx] = { ...next[globalIdx], value };
+            return next;
+          });
+          return;
+       }
+    }
+
+    if (stack.length === 0) {
+       // Just add to globals if no stack exists yet
+       setGlobals(prev => [...prev, {
+         id: Math.random().toString(),
+         name: normalizedName,
+         type,
+         value,
+         address: `0x${(0x400000 + prev.length * 4).toString(16).toUpperCase()}`,
+         size: 4
+       }]);
+       return;
     }
 
     setStack(prev => {
       const updated = [...prev];
       if (updated.length === 0) return prev;
       
-      const topFrameIndex = updated.length - 1;
-      const frame = updated[topFrameIndex];
-      
-      // Handle array and member assignment (e.g., b[i].page or p->x)
-      const isMemberAssignment = normalizedName.includes('.');
-      const isArrayAccess = normalizedName.includes('[');
-      
-      let rootVarName = normalizedName;
-      if (isMemberAssignment || isArrayAccess) {
-        rootVarName = normalizedName.split(/[.\[]/)[0];
+      let targetFrameIdx = -1;
+      let varIndex = -1;
+
+      // Search from top frame down to support scope resolution
+      for (let i = updated.length - 1; i >= 0; i--) {
+        const idx = updated[i].variables.findIndex(v => v.name === normalizedName);
+        if (idx !== -1) {
+          targetFrameIdx = i;
+          varIndex = idx;
+          break;
+        }
       }
       
-      const varIndex = frame.variables.findIndex(v => v.name === rootVarName);
-      
-      if (varIndex > -1) {
+      if (targetFrameIdx !== -1) {
+        const frame = updated[targetFrameIdx];
         const newVars = [...frame.variables];
         const existingVar = newVars[varIndex];
-
-        if (isMemberAssignment || isArrayAccess) {
-          let newValue = existingVar.value;
-          if (newValue === '0x00 (UNINIT)' || newValue === '0') newValue = '{}';
-          
-          const subKey = normalizedName.replace(rootVarName, '');
-          
-          // Improved replacement logic to handle nested keys and avoid redundancy
-          const escapedSub = subKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const entryRegex = new RegExp(`\\${escapedSub}:\\s*[^,}]+`);
-          
-          if (newValue.match(entryRegex)) {
-            newValue = newValue.replace(entryRegex, `${subKey}: ${value}`);
-          } else {
-            // Check if we are replacing a parent placeholder (e.g. [0]: 0 with [0].prop: val)
-            const parentKey = subKey.match(/^(\[[^\]]+\]|\.[\w]+)/)?.[1];
-            if (parentKey) {
-                const parentPlaceholder = new RegExp(`\\${parentKey}:\\s*0(?=[,}]|$)`);
-                if (newValue.match(parentPlaceholder)) {
-                    newValue = newValue.replace(parentPlaceholder, `${subKey}: ${value}`);
-                } else if (newValue === '{}') {
-                    newValue = `{${subKey}: ${value}}`;
-                } else {
-                    newValue = newValue.replace('}', `, ${subKey}: ${value}}`);
-                }
-            } else if (newValue === '{}') {
-                newValue = `{${subKey}: ${value}}`;
-            } else {
-                newValue = newValue.replace('}', `, ${subKey}: ${value}}`);
-            }
-          }
-          
-          newVars[varIndex] = { ...existingVar, value: newValue, type: existingVar.type === 'array' ? 'array' : 'struct' };
-        } else {
-          newVars[varIndex] = { ...existingVar, value, type };
-        }
-        updated[topFrameIndex] = { ...frame, variables: newVars };
+        
+        newVars[varIndex] = { ...existingVar, value };
+        updated[targetFrameIdx] = { ...frame, variables: newVars };
       } else {
+        const topFrameIndex = updated.length - 1;
+        const frame = updated[topFrameIndex];
         const currentSize = frame.variables.reduce((sum, v) => sum + v.size, 0);
         const size = type === 'pointer' ? 8 : (type === 'struct' ? 12 : type === 'array' ? 40 : 4);
         const baseAddr = parseInt(frame.id, 16);
@@ -249,9 +313,9 @@ int main() {
           ...frame,
           variables: [...frame.variables, {
             id: Math.random().toString(),
-            name: rootVarName,
+            name: normalizedName,
             type,
-            value: (isMemberAssignment || isArrayAccess) ? `{${normalizedName.replace(rootVarName, '')}: ${value}}` : value,
+            value,
             address,
             size
           }]
@@ -259,30 +323,40 @@ int main() {
       }
       return updated;
     });
-  }, [heap, stack]);
+  }, [heap, stack, globals]);
 
   const evaluateExpression = useCallback((expr: string): string => {
     if (!expr || expr.trim() === "") return "0";
     let replacedExpr = expr.trim();
     if (stack.length === 0) return replacedExpr;
-    const currentFrame = stack[stack.length - 1];
 
-    // 1. Resolve variables and complex accesses in the expression
-    // Sort variables by name length descending to avoid partial matches
+    // Resolve variables (Check current frame first, then globals)
+    const findVariable = (name: string) => {
+        // Try current frame
+        if (stack.length > 0) {
+            const currentFrame = stack[stack.length - 1];
+            const v = currentFrame.variables.find(v => v.name === name);
+            if (v) return v;
+        }
+        
+        // Try globals
+        return globals.find(g => g.name === name) || null;
+    };
+
+    const currentFrame = stack[stack.length - 1];
     const sortedVars = [...currentFrame.variables].sort((a, b) => b.name.length - a.name.length);
 
     let finalExpr = replacedExpr;
     
-    // Pattern for complex access: b[i].page or b[0].page or b1.page
     let iterations = 0;
     while (iterations < 40) {
       iterations++;
 
-      // Handle dereference explicitly: *(address) or *address
-      const derefMatch = finalExpr.match(/\*(\(0x[0-9A-Fa-f]+\)|0x[0-9A-Fa-f]+)/);
-      if (derefMatch) {
-         const fullDeref = derefMatch[0];
-         const targetAddr = derefMatch[1].replace(/[()]/g, '');
+      // Handle explicit pointer dereference via address: *(0x...) or *0x...
+      const derefAddrMatch = finalExpr.match(/\*(\(0x[0-9A-Fa-f]+\)|0x[0-9A-Fa-f]+)/);
+      if (derefAddrMatch) {
+         const fullDeref = derefAddrMatch[0];
+         const targetAddr = derefAddrMatch[1].replace(/[()]/g, '');
          const heapTarget = heap.find(h => h.address === targetAddr);
          const stackTarget = [...stack].reverse().flatMap(f => f.variables).find(v => v.address === targetAddr);
          const targetValue = heapTarget ? heapTarget.value : (stackTarget ? stackTarget.value : '0');
@@ -290,13 +364,39 @@ int main() {
          continue;
       }
 
-      // Match variables with optional & prefix and chain of accessors
-      const match = finalExpr.match(/(&)?(\b[a-zA-Z_]\w*\b)((?:\[[^\]]+\]|\.[\w]+|->[\w]+)*)/);
+      // Handle pointer variable dereference: *ptr
+      const derefVarMatch = finalExpr.match(/\*([a-zA-Z_]\w*)/);
+      if (derefVarMatch) {
+        const fullMatch = derefVarMatch[0];
+        const varName = derefVarMatch[1];
+        const v = findVariable(varName);
+        if (v && (v.type === 'pointer' || v.value.startsWith('0x'))) {
+          const targetAddr = v.value;
+          const heapTarget = heap.find(h => h.address === targetAddr);
+          const stackTarget = [...stack].reverse().flatMap(f => f.variables).find(v => v.address === targetAddr);
+          const targetValue = heapTarget ? heapTarget.value : (stackTarget ? stackTarget.value : '0');
+          finalExpr = finalExpr.replace(fullMatch, targetValue);
+          continue;
+        }
+      }
+
+      // Handle addresses
+      const addrMatch = finalExpr.match(/(?:&|&amp;)([a-zA-Z_]\w*)/);
+      if (addrMatch) {
+        const fullMatch = addrMatch[0];
+        const varName = addrMatch[1];
+        const v = findVariable(varName);
+        if (v) {
+          finalExpr = finalExpr.replace(fullMatch, v.address);
+          continue;
+        }
+      }
+
+      const match = finalExpr.match(/(&|&amp;)?\b(?!(?:__SKIP__|__KEY__))([a-zA-Z_]\w*)\b((?:\[[^\]]+\]|\.[\w]+|->[\w]+)*)/);
       if (!match) break;
 
       const [fullMatch, isAddress, root, tail] = match;
       
-      // Keywords to ignore
       if (['int', 'char', 'float', 'double', 'void', 'struct', 'if', 'for', 'while', 'return', 'printf', 'scanf', 'malloc', 'free', 'sizeof', 'NULL'].includes(root)) {
         if (root === 'NULL') {
           finalExpr = finalExpr.replace(fullMatch, '0');
@@ -306,13 +406,12 @@ int main() {
         continue;
       }
 
-      const v = sortedVars.find(v => v.name === root);
+      const v = findVariable(root);
       
       if (v) {
         let resolvedValue = isAddress ? v.address : v.value;
         if (!isAddress && (v.type === 'array' || v.type === 'struct' || v.type === 'pointer') && tail) {
           const normalizedTail = tail.replace(/->/g, '.');
-          // Resolve indices if they are variables or expressions in the tail
           let resolvedTail = normalizedTail;
           const indexMatches = Array.from(normalizedTail.matchAll(/\[([^\]]+)\]/g));
           for (const m of indexMatches) {
@@ -323,7 +422,6 @@ int main() {
             }
           }
 
-          // Try flat lookup first (e.g., [0][1]: value)
           const searchKey = `${resolvedTail}:`;
           if (v.value.includes(searchKey)) {
             const startIdx = v.value.indexOf(searchKey) + searchKey.length;
@@ -341,7 +439,6 @@ int main() {
               resolvedValue = v.value.substring(startIdx, actualEnd).trim();
             }
           } else {
-            // Recursive lookup for nested structures
             const accessors = resolvedTail.match(/\[\d+\]|\.[\w]+/g) || [];
             let currentData = v.value;
             for (const acc of accessors) {
@@ -373,86 +470,254 @@ int main() {
           }
         }
         
-        // Escape for regex and replace the specific variable instance
         const escaped = fullMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const boundaryRegex = new RegExp(`(^|\\W)${escaped}(\\W|$)`);
         finalExpr = finalExpr.replace(boundaryRegex, (match, p1, p2) => (p1 || '') + resolvedValue + (p2 || ''));
       } else {
-        // Not a monitored variable
         finalExpr = finalExpr.replace(fullMatch, `__SKIP__${fullMatch}__`);
       }
     }
     
-    // Restore skipped parts
-    finalExpr = finalExpr.replace(/__KEY__|__/g, '');
     finalExpr = finalExpr.replace(/__SKIP__(\w+)__/g, '0');
+    finalExpr = finalExpr.replace(/__KEY__(\w+)__/g, '$1');
 
-    // Normalize addresses for eval (0x... -> parseInt("0x...", 16))
-    const hexPattern = /0x[0-9A-Fa-f]+/g;
-    finalExpr = finalExpr.replace(hexPattern, (match) => parseInt(match, 16).toString());
+    // Replace hexadecimal addresses with their decimal values only for arithmetic, 
+    // but try to preserve them if they are alone or being assigned as pointers.
+    const isPureAddress = finalExpr.trim().match(/^0x[0-9A-Fa-f]+$/);
+    if (!isPureAddress) {
+      const hexPattern = /0x[0-9A-Fa-f]+/g;
+      finalExpr = finalExpr.replace(hexPattern, (match) => parseInt(match, 16).toString());
+    }
 
     try {
         const cleanedExpr = finalExpr.replace(/!/g, ' ! ').replace(/&&/g, ' && ').replace(/\|\|/g, ' || ');
+        if (isPureAddress) return isPureAddress[0]; 
         // eslint-disable-next-line no-eval
         const result = eval(cleanedExpr);
         return result !== undefined ? result.toString() : finalExpr;
     } catch (e) {
       return finalExpr;
     }
-  }, [stack, heap]);
+  }, [stack, heap, globals]);
 
 
   const stepCode = useCallback(() => {
     try {
       if (currentLine === -1) {
-        setStack([]);
-        setHeap([]);
-        setLoopStack([]);
-        setCurrentLine(0);
-        logMessage("INITIALIZING... KERNEL_START_PAUSED");
+        resetCompiler();
         return;
       }
 
-      if (currentLine >= code.split('\n').length) {
+      const lines = code.split('\n');
+      if (currentLine >= lines.length) {
         setIsAutoStepping(false);
         logMessage("EXECUTION_COMPLETE: Kernel gracefully exited.");
         return;
       }
 
-      const lines = code.split('\n');
-      
       // Multi-line statement accumulator
       let statement = "";
       let swallowed = 0;
       let i = currentLine;
       let parenDepth = 0;
+      let bracketDepth = 0;
 
       while (i < lines.length) {
         const raw = lines[i];
-        const trimmed = raw.trim();
+        let trimmed = raw.split('//')[0].split('/*')[0].trim();
+        
         statement += (statement ? " " : "") + trimmed;
         swallowed++;
 
-        parenDepth += (raw.match(/\(/g) || []).length;
-        parenDepth -= (raw.match(/\)/g) || []).length;
+        parenDepth += (trimmed.match(/\(/g) || []).length;
+        parenDepth -= (trimmed.match(/\)/g) || []).length;
+        bracketDepth += (trimmed.match(/\{/g) || []).length;
+        bracketDepth -= (trimmed.match(/\}/g) || []).length;
 
         if (parenDepth <= 0) {
           if (trimmed.endsWith(';') || trimmed.endsWith('{') || trimmed.endsWith('}')) break;
-          if (trimmed.match(/^(if|for|while|else|struct)/) && (trimmed.endsWith(')') || trimmed.endsWith('else'))) break;
-          // Also stop if it's a preprocessor or empty line
+          if (trimmed.match(/^(if|for|while|else|struct)/) && (trimmed.endsWith(')') || trimmed.endsWith('else') || trimmed.endsWith('{'))) break;
           if (trimmed.startsWith('#') || !trimmed) break;
         }
         i++;
       }
 
-      if (swallowed > 1) {
-        logMessage(`DEBUG: Consolidated ${swallowed} lines into single execution unit.`);
-      }
       setSwallowedLines(swallowed);
-
       const line = statement.startsWith('for') ? statement : statement.split(';')[0].trim();
       
-      if (!line || line.startsWith('//') || line.startsWith('#')) {
+      // If we are at the start of main, push its frame
+      if (currentLine >= 0 && lines[currentLine].includes('main(') && stack.length === 0) {
+         pushFrame('main');
+         setCurrentLine(prev => prev + 1);
+         return;
+      }
+      
+      // Handle function return (closing brace or return statement)
+      if (line === '}' || line.startsWith('return')) {
+         if (returnStack.length > 0) {
+            const last = returnStack[returnStack.length - 1];
+            setReturnStack(prev => prev.slice(0, -1));
+            popFrame();
+            setCurrentLine(last.line + last.swallowed);
+            logMessage(`RETURN: Popping stack frame. Returning to line ${last.line + last.swallowed + 1}.`);
+            return;
+         } else if (line === '}') {
+            // End of main probably
+            popFrame();
+            setCurrentLine(lines.length);
+            logMessage("TERMINATE: End of scope reached. Execution halted.");
+            return;
+         }
+      }
+
+      if (!line || line.startsWith('#')) {
+        setCurrentLine(prev => prev + swallowed);
+        return;
+      }
+
+      // Handled prototypes or declarations: skip skip skip
+      const isPrototype = (line.includes('int ') || line.includes('void ') || line.includes('char ')) && 
+                          line.includes('(') && 
+                          line.includes(';') && 
+                          !line.includes('=');
+      
+      if (isPrototype) {
+        setCurrentLine(prev => prev + swallowed);
+        return;
+      }
+
+      // Check for function definitions outside main to skip them unless called
+      const isFunctionDef = (line.includes('int ') || line.includes('void ') || line.includes('char ')) && 
+                            line.includes('(') && 
+                            !line.includes(';') && 
+                            !line.includes('=');
+
+      if (isFunctionDef && !lines[currentLine].includes('main(')) {
+         // Skip function declaration/body if we aren't executing it via CALL
+         let depth = 0;
+         let skipTo = -1;
+         for (let j = currentLine; j < lines.length; j++) {
+            if (lines[j].includes('{')) depth++;
+            if (lines[j].includes('}')) depth--;
+            if (depth === 0 && j !== currentLine && lines[j].includes('}')) {
+              skipTo = j;
+              break;
+            }
+         }
+         if (skipTo !== -1) {
+            setCurrentLine(skipTo + 1);
+            logMessage(`SKIP: Function '${line.match(/\w+(?=\s*\()/)?.[0]}' body bypassed.`);
+            return;
+         }
+      }
+
+      // Special handling for function calls like swap(a, b)
+      const callMatch = line.match(/^(\w+)\s*\((.*)\)$/);
+      if (callMatch && !line.match(/^(if|for|while|printf|scanf|malloc|free|return)/)) {
+        const funcName = callMatch[1];
+        const argsStr = callMatch[2];
+        
+        // Find function in code
+        let funcLine = -1;
+        for (let j = 0; j < lines.length; j++) {
+           if (lines[j].includes(`${funcName}(`) && !lines[j].includes(';') && j !== currentLine) {
+              funcLine = j;
+              break;
+           }
+        }
+
+        if (funcLine !== -1) {
+           logMessage(`CALL: Transferring control to '${funcName}'. Pushing frame.`);
+           setReturnStack(prev => [...prev, { line: currentLine, swallowed }]);
+           pushFrame(funcName);
+           
+           // Extract parameter names from function definition
+           const defLine = lines[funcLine];
+           const paramsMatch = defLine.match(/\((.*)\)/);
+           if (paramsMatch) {
+              const params = paramsMatch[1].split(',').map(p => p.trim().split(/\s+/).pop());
+              const argVals = argsStr.split(',').map(a => evaluateExpression(a.trim()));
+              
+              setStack(prev => {
+                const next = [...prev];
+                const frame = next[next.length - 1];
+                params.forEach((p, idx) => {
+                  if (p) {
+                    const isPointerParam = p.startsWith('*');
+                    const cleanName = p.replace('*', '').trim();
+                    frame.variables.push({
+                      id: Math.random().toString(),
+                      name: cleanName || `param_${idx}`,
+                      type: isPointerParam ? 'pointer' : 'value',
+                      value: argVals[idx] || '0',
+                      address: `0x${(parseInt(frame.id, 16) - (idx + 1) * 4).toString(16).toUpperCase()}`,
+                      size: isPointerParam ? 8 : 4
+                    });
+                  }
+                });
+                return next;
+              });
+           }
+           
+           setCurrentLine(funcLine + 1);
+           return;
+        } else {
+           setErrors(prev => [...prev, { line: currentLine, message: `Undefined function: ${funcName}` }]);
+           logMessage(`ERROR: Function '${funcName}' not found in scope.`);
+           setIsAutoStepping(false);
+           return;
+        }
+      }
+
+      // Handle printf
+      if (line.startsWith('printf')) {
+        const match = line.match(/printf\s*\(\s*"(.*?)"\s*(?:,\s*(.*))?\)/);
+        if (match) {
+          let format = match[1];
+          const argsStr = match[2];
+          
+          let output = format;
+          if (argsStr) {
+             const args = argsStr.split(',').map(a => evaluateExpression(a.trim()));
+             args.forEach(arg => {
+                output = output.replace(/%[dsuxfp]/, arg);
+             });
+          }
+          
+          // Handle newlines and tabs
+          const processedOutput = output.replace(/\\t/g, '    ');
+          const lines = processedOutput.split('\\n');
+          lines.forEach((l, idx) => {
+            if (l.length > 0 || idx < lines.length - 1) {
+              logMessage(`STDOUT: ${l}`, 'result');
+            }
+          });
+        }
+        setCurrentLine(prev => prev + swallowed);
+        return;
+      }
+      // Handle variable assignment/declaration
+      // int a = 10; or a = 10; or int a; or *x = 5;
+      const assignMatch = line.match(/^(?:int|char|float|double|void)?\s*(\*?[a-zA-Z_]\w*)\s*(?:=\s*(.*))?$/);
+      if (assignMatch && !line.includes('(')) {
+        let varName = assignMatch[1];
+        const expr = assignMatch[2];
+        const isDecl = line.match(/^(int|char|float|double|void)/);
+        const isPointerDecl = line.match(/^(int|char|float|double|void)\s*\*/);
+        
+        // If it's a declaration like "int *p", strip the '*' from name but mark as pointer type
+        if (isDecl && varName.startsWith('*')) {
+          varName = varName.substring(1).trim();
+        }
+
+        if (expr) {
+          const val = evaluateExpression(expr);
+          updateOrAddVariable(varName, val, isPointerDecl ? 'pointer' : 'value');
+          logMessage(`ASSIGN: ${varName} = ${val}`, 'action');
+        } else {
+          updateOrAddVariable(varName, '0', isPointerDecl ? 'pointer' : 'value');
+          logMessage(`DECLARE: ${varName} initialized to 0.`, 'action');
+        }
         setCurrentLine(prev => prev + swallowed);
         return;
       }
@@ -839,15 +1104,13 @@ int main() {
     setIsAutoStepping(false);
     if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
     
-    // Tiny delay to ensure state updates propagate before restarting
+    resetCompiler();
+    
+    // Tiny delay to ensure state updates propagate before starting auto-step
     setTimeout(() => {
-      setStack([]);
-      setHeap([]);
-      setLoopStack([]);
-      setCurrentLine(0);
       setIsAutoStepping(true);
-      logMessage("COMPILING... KERNEL_START");
-    }, 50);
+      logMessage("EXECUTION_START: Auto-stepping initiated from main.");
+    }, 100);
   };
 
   const handleInputSubmit = (e: React.FormEvent) => {
@@ -921,58 +1184,59 @@ int main() {
       {/* Background Accents */}
       {theme === 'dark' ? (
         <>
-          <div className="fixed inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:32px_32px] pointer-events-none opacity-[0.15]" />
-          <div className="fixed inset-0 bg-[linear-gradient(to_bottom,transparent,rgba(7,7,8,0.8))] pointer-events-none" />
+          <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_right,#1e1b4b_0%,transparent_50%)] pointer-events-none opacity-40" />
+          <div className="fixed inset-0 bg-[radial-gradient(circle_at_bottom_left,#1e293b_0%,transparent_40%)] pointer-events-none opacity-30" />
+          <div className="fixed inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] pointer-events-none brightness-100 contrast-150" />
         </>
       ) : (
         <div className="fixed inset-0 bg-[radial-gradient(#d1d5db_1px,transparent_1px)] [background-size:32px_32px] pointer-events-none opacity-40" />
       )}
 
-      {isMounted && <PointerOverlay theme={theme} stack={stack} heap={heap} containerRef={containerRef} />}
 
-      <header className={`relative z-40 border-b px-6 py-3 flex items-center justify-between backdrop-blur-xl ${
-        theme === 'dark' ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/60 shadow-sm'
+
+      <header className={`relative z-40 border-b px-8 py-5 flex items-center justify-between backdrop-blur-3xl ${
+        theme === 'dark' ? 'border-white/5 bg-black/60' : 'border-black/5 bg-white/70 shadow-sm'
       }`}>
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-4">
-            <div className={`p-2 rounded-none border ${theme === 'dark' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-600/10 border-blue-600/20 text-blue-600'}`}>
-              <Cpu size={20} strokeWidth={2.5} />
+        <div className="flex items-center gap-10">
+          <div className="flex items-center gap-5">
+            <div className={`w-12 h-12 flex items-center justify-center border-l-2 ${theme === 'dark' ? 'bg-blue-500/10 border-blue-500 text-blue-400' : 'bg-blue-600/10 border-blue-600 text-blue-600'}`}>
+              <Cpu size={24} strokeWidth={2.5} />
             </div>
             <div>
-              <h1 className={`text-lg font-black tracking-tighter uppercase ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
-                C_Compiler_Visualizer <span className="text-[9px] bg-emerald-500/20 text-emerald-500 px-1.5 py-0.5 rounded-none ml-2 align-middle border border-emerald-500/30">v2.1</span>
+              <h1 className={`text-2xl font-black tracking-tighter uppercase leading-none ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                Kernel_Trace <span className="text-[10px] font-mono text-blue-500 ml-2 tracking-widest opacity-60">RUNTIME_ENV_V2</span>
               </h1>
-              <p className="text-[9px] font-mono opacity-50 uppercase tracking-[0.2em]">Kernel-Level Memory Trace</p>
+              <p className="text-[9px] font-mono opacity-40 uppercase tracking-[0.4em] mt-2">Physical Memory Allocation Visualizer</p>
             </div>
           </div>
 
-          <nav className="hidden md:flex items-center ml-8 border-l border-white/10 pl-8 h-10 gap-1">
+          <nav className="hidden lg:flex items-center gap-2 border-l border-white/5 pl-10 h-10">
             <button 
               onClick={() => setMainTab('compiler')}
-              className={`px-4 h-full text-[10px] font-black uppercase tracking-widest transition-all relative flex items-center gap-2 ${
+              className={`px-6 h-full text-[10px] font-black uppercase tracking-[0.2em] transition-all relative flex items-center gap-2 group ${
                 mainTab === 'compiler' 
-                  ? (theme === 'dark' ? 'text-white' : 'text-blue-600') 
+                  ? (theme === 'dark' ? 'text-blue-400' : 'text-blue-600') 
                   : (theme === 'dark' ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')
               }`}
             >
-              <Cpu size={14} />
-              Compiler
+              <Workflow size={14} className="group-hover:rotate-12 transition-transform" />
+              Compiler_Core
               {mainTab === 'compiler' && (
-                <motion.div layoutId="activeTab" className="absolute -bottom-[13px] left-0 right-0 h-0.5 bg-blue-500" />
+                <motion.div layoutId="navIndicator" className="absolute -bottom-[21px] left-0 right-0 h-[2px] bg-blue-500" />
               )}
             </button>
             <button 
               onClick={() => setMainTab('dsa')}
-              className={`px-4 h-full text-[10px] font-black uppercase tracking-widest transition-all relative flex items-center gap-2 ${
+              className={`px-6 h-full text-[10px] font-black uppercase tracking-[0.2em] transition-all relative flex items-center gap-2 group ${
                 mainTab === 'dsa' 
-                  ? (theme === 'dark' ? 'text-white' : 'text-emerald-500') 
+                  ? (theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600') 
                   : (theme === 'dark' ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600')
               }`}
             >
-              <Gamepad2 size={14} />
-              DSA_World
+              <Network size={14} className="group-hover:scale-110 transition-transform" />
+              World_Space
               {mainTab === 'dsa' && (
-                <motion.div layoutId="activeTab" className="absolute -bottom-[13px] left-0 right-0 h-0.5 bg-emerald-500" />
+                <motion.div layoutId="navIndicator" className="absolute -bottom-[21px] left-0 right-0 h-[2px] bg-emerald-500" />
               )}
             </button>
           </nav>
@@ -1023,9 +1287,9 @@ int main() {
                   <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Source_Buffer</span>
                 </div>
                 <div className="flex-1 overflow-hidden relative flex flex-col">
-                  <CodeEditor 
-                    code={code} setCode={setCode} currentLine={currentLine} theme={theme}
-                  />
+                    <CodeEditor 
+                       code={code} setCode={setCode} currentLine={currentLine} theme={theme} errors={errors}
+                    />
                 </div>
               </section>
 
@@ -1040,10 +1304,14 @@ int main() {
                     <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">Memory_Sector</span>
                   </div>
                   <div className="flex gap-4">
-                     <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                       <div className="w-2 h-2 rounded-none bg-indigo-500/50" />
+                       <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Globals</span>
+                    </div>
+                    <div className="flex items-center gap-2">
                        <div className="w-2 h-2 rounded-none bg-blue-500/50" />
                        <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Stack</span>
-                     </div>
+                    </div>
                      <div className="flex items-center gap-2">
                        <div className="w-2 h-2 rounded-none bg-emerald-500/50" />
                        <span className="text-[8px] font-mono font-bold uppercase tracking-wider opacity-60">Heap</span>
@@ -1052,6 +1320,43 @@ int main() {
                 </div>
                 
                 <div className="p-8 space-y-12 flex flex-col items-center flex-1 transition-colors">
+                  <div className="w-full max-w-7xl">
+                    {globals.length > 0 && (
+                      <div className={`mb-16 border rounded-none overflow-hidden ${theme === 'dark' ? 'bg-indigo-500/5 border-indigo-500/20' : 'bg-indigo-500/5 border-indigo-500/10'}`}>
+                        <div className={`flex items-center justify-between p-4 border-b ${theme === 'dark' ? 'border-white/5 bg-black/20' : 'border-black/5 bg-white/50'}`}>
+                          <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-indigo-400 flex items-center gap-3">
+                            <Monitor size={14} /> .DATA_SECTION :: STATIC_MEM
+                          </h3>
+                          <span className="text-[9px] font-mono opacity-30 uppercase tracking-widest">Global_Namespace_Segment</span>
+                        </div>
+                        <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                          {globals.map((g: any) => (
+                            <div 
+                              key={g.id} 
+                              className={`group p-4 border transition-all hover:scale-[1.02] ${theme === 'dark' ? 'bg-black/60 border-white/5 hover:border-indigo-500/40 shadow-xl' : 'bg-white border-black/10 shadow-sm hover:shadow-md'}`}
+                            >
+                              <div className="flex justify-between items-start mb-3">
+                                <code 
+                                  id={`p-addr-${g.address.toUpperCase()}`}
+                                  className={`text-[9px] font-mono opacity-40 group-hover:opacity-100 transition-opacity`}
+                                >
+                                  {g.address}
+                                </code>
+                                <span className="text-[8px] font-black text-indigo-500/50 uppercase tracking-tighter">VALUE</span>
+                              </div>
+                              <div 
+                                className="flex justify-between items-end"
+                                id={g.type === 'pointer' ? `p-src-${g.id}` : undefined}
+                              >
+                                <span className={`font-black text-indigo-400 text-base tracking-tight`}>{g.name}</span>
+                                <span className={`font-mono font-black text-lg ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{g.value}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   <div className="w-full max-w-7xl grid grid-cols-1 xl:grid-cols-2 gap-10 relative">
                      <StackVisualizer theme={theme} stack={stack} />
                      <HeapVisualizer theme={theme} heap={heap} freeHeap={freeHeap} />

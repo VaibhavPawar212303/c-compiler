@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Layers } from 'lucide-react';
+import { Layers, Zap } from 'lucide-react';
 import { StackFrame } from '../types/memory';
 
 interface StackVisualizerProps {
@@ -59,71 +59,93 @@ const StackVisualizer = ({ stack, theme = 'dark' }: StackVisualizerProps) => {
                     : (theme === 'dark' ? 'bg-white/[0.01] border-white/5 opacity-40 grayscale-[0.8]' : 'bg-slate-50 border-slate-200 opacity-40')
                 }`}
               >
-                <div className="flex items-center justify-between mb-5">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-none animate-pulse ${theme === 'dark' ? 'bg-blue-500 shadow-[0_0_10px_#3b82f6]' : 'bg-blue-600 shadow-[0_0_8px_#2563eb]'}`} />
-                    <span className={`text-[11px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
-                      CPU_Frame : <span className={theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}>{frame.functionName}()</span>
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-4">
+                    <div className={`flex flex-col items-center justify-center w-10 h-10 border ${
+                      theme === 'dark' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-blue-50 border-blue-500 text-blue-600'
+                    }`}>
+                      <Layers size={16} />
+                    </div>
+                    <div>
+                      <h4 className={`text-[10px] font-black uppercase tracking-[0.2em] ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                        Call_Frame : <span className={theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}>{frame.functionName}</span>
+                      </h4>
+                      <p className="text-[8px] font-mono opacity-40 uppercase tracking-widest mt-0.5">Stack_Allocation_Active</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end">
+                    <span className={`text-[9px] font-mono font-bold px-2 py-0.5 border ${
+                      theme === 'dark' ? 'bg-black/40 border-white/10 text-slate-500' : 'bg-slate-100 border-black/10 text-slate-400'
+                    }`}>
+                      {frame.id}
                     </span>
                   </div>
-                  <span className={`text-[9px] font-mono px-2 py-0.5 rounded-none border ${
-                    theme === 'dark' ? 'bg-blue-500/5 border-blue-500/20 text-blue-500/60' : 'bg-blue-400/5 border-blue-400/20 text-blue-600'
-                  }`}>
-                    UID::{frame.id.substring(0, 8)}
-                  </span>
                 </div>
 
-                <div className="space-y-4">
+                <div className={`grid grid-cols-1 gap-1 border-t pt-6 ${theme === 'dark' ? 'border-white/5' : 'border-black/5'}`}>
                   {frame.variables.map((v, i) => (
                     <motion.div 
                       key={v.id}
                       initial={{ x: -10, opacity: 0 }}
                       animate={{ x: 0, opacity: 1 }}
-                      transition={{ delay: i * 0.1 }}
+                      transition={{ delay: i * 0.05 }}
                       className="group relative"
                     >
                       <div 
-                        id={`p-addr-${v.address.toUpperCase()}`}
-                        className={`flex flex-col gap-3 p-4 rounded-none border transition-all ${
-                          theme === 'dark' ? 'bg-black/40 border-white/5 hover:border-blue-500/30' : 'bg-white border-black/5 hover:border-blue-500 shadow-sm hover:shadow-md'
+                        className={`flex flex-col md:flex-row md:items-center gap-4 p-4 transition-all border-b last:border-b-0 ${
+                          theme === 'dark' ? 'hover:bg-white/[0.02] border-white/5' : 'hover:bg-slate-50 border-black/5'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
-                          <div className={`flex items-center gap-2 px-3 py-1 rounded-none border ${
-                            theme === 'dark' ? 'bg-blue-500/5 border-white/5' : 'bg-blue-50/50 border-blue-100'
-                          }`}>
-                            <span className="text-[8px] font-mono opacity-50 uppercase tracking-tighter">0x{v.address.toUpperCase()}</span>
-                            <span className={`text-[10px] font-bold tracking-tight ${theme === 'dark' ? 'text-slate-300' : 'text-slate-700'}`}>
-                              <span className={theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}>{v.name}</span>
-                            </span>
-                          </div>
-                          <span className={`text-[8px] font-black px-2 py-1 rounded-none uppercase tracking-widest ${
-                            v.type === 'pointer' ? 'bg-emerald-500/10 text-emerald-500' : (theme === 'dark' ? 'bg-white/5 text-slate-500' : 'bg-slate-200 text-slate-600')
+                        {/* Address and ID column */}
+                        <div className="w-[120px] shrink-0">
+                          <code 
+                            id={`p-addr-${v.address.toUpperCase()}`}
+                            className={`text-[10px] font-mono block ${theme === 'dark' ? 'text-blue-400/60' : 'text-blue-600/60'}`}
+                          >
+                            {v.address.toUpperCase()}
+                          </code>
+                          <span className={`text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-sm border inline-block mt-1 ${
+                            v.type === 'pointer' 
+                              ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' 
+                              : (theme === 'dark' ? 'bg-white/5 border-white/10 text-slate-500' : 'bg-slate-100 border-black/5 text-slate-400')
                           }`}>
                             {v.type}
                           </span>
                         </div>
-                        
-                        <div className={`flex items-center justify-between px-3 py-2 rounded-none relative ${
-                          theme === 'dark' ? 'bg-black/60' : 'bg-slate-50'
-                        }`} id={v.type === 'pointer' ? `p-src-${v.id}` : undefined}>
-                          {v.value.startsWith('{') ? (
-                            <div className="w-full">
-                               <div className={`p-4 rounded-none border space-y-1.5 transition-colors overflow-hidden ${
-                                 theme === 'dark' ? 'bg-black/20 border-white/5' : 'bg-white border-black/5 shadow-inner'
-                               }`}>
 
-                                 {renderHierarchy(v.value, v.address, theme)}
-                               </div>
+                        {/* Variable Name column */}
+                        <div className="w-[100px] shrink-0">
+                           <div className="flex flex-col">
+                              <span className={`text-[11px] font-bold ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                                {v.name}
+                              </span>
+                              <span className="text-[8px] font-mono opacity-30">size: {v.size}B</span>
+                           </div>
+                        </div>
+                        
+                        {/* Value display column */}
+                        <div 
+                          className={`flex-1 flex items-center justify-between px-4 py-2 relative min-h-[36px] ${
+                            theme === 'dark' ? 'bg-black/40 border border-white/5' : 'bg-white border border-black/5 shadow-inner'
+                          }`} 
+                        >
+                          {v.value.startsWith('{') ? (
+                            <div className="w-full py-1">
+                               {renderHierarchy(v.value, v.address, theme)}
                             </div>
                           ) : (
                             <>
-                              <span className="text-[9px] font-mono opacity-30 uppercase tracking-widest">DATA_BUF::</span>
-                              <span className={`text-xs font-mono font-bold ${
-                                v.type === 'pointer' ? 'text-emerald-500 animate-pulse' : (theme === 'dark' ? 'text-white' : 'text-slate-900')
-                              }`}>
+                              <span 
+                                id={v.type === 'pointer' ? `p-src-${v.id}` : undefined}
+                                className={`text-xs font-mono font-bold tracking-tight truncate max-w-[200px] ${
+                                  v.type === 'pointer' ? 'text-emerald-500' : (theme === 'dark' ? 'text-white' : 'text-slate-900')
+                                }`}
+                              >
                                 {v.value}
                               </span>
+                              {v.type === 'pointer' && (
+                                <Zap size={10} className="text-emerald-500/40" />
+                              )}
                             </>
                           )}
                         </div>
