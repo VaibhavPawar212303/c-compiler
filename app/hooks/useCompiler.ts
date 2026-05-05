@@ -11,12 +11,13 @@ export function useCompiler(initialCode: string) {
   const [currentLine, setCurrentLine] = useState(-1);
   const [history, setHistory] = useState<string[]>(["SYSTEM_BOOT: READY"]);
   const [isAutoStepping, setIsAutoStepping] = useState(false);
+  const [wasAutoStepping, setWasAutoStepping] = useState(false);
   const [isAwaitingInput, setIsAwaitingInput] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [inputTarget, setInputTarget] = useState<{name: string, type: string} | null>(null);
   
   const [loopStack, setLoopStack] = useState<LoopState[]>([]);
-  const [returnStack, setReturnStack] = useState<{line: number, swallowed: number}[]>([]);
+  const [returnStack, setReturnStack] = useState<{line: number, swallowed: number, targetVar?: string}[]>([]);
   const [swallowedLines, setSwallowedLines] = useState(1);
   const [errors, setErrors] = useState<{ line: number, message: string }[]>([]);
 
@@ -256,7 +257,7 @@ export function useCompiler(initialCode: string) {
          finalExpr = finalExpr.replace(fullDeref, heapTarget ? heapTarget.value : (stackTarget ? stackTarget.value : '0'));
          continue;
       }
-      const derefVarMatch = finalExpr.match(/\*([a-zA-Z_]\w*)/);
+      const derefVarMatch = finalExpr.match(/\*\s*([a-zA-Z_]\w*)/);
       if (derefVarMatch) {
         const varName = derefVarMatch[1];
         const v = findVariable(varName);
@@ -339,7 +340,8 @@ export function useCompiler(initialCode: string) {
         
         // C-style integer division: if variables are ints, we truncate the result
         // For simplicity in this simulator, we truncate if there's a division operator and result is numeric
-        if (typeof result === 'number' && finalExpr.includes('/')) {
+        // and no decimal points are present in the resolved expression
+        if (typeof result === 'number' && finalExpr.includes('/') && !finalExpr.includes('.')) {
           result = Math.trunc(result);
         }
         
@@ -381,6 +383,38 @@ export function useCompiler(initialCode: string) {
       if (line === '}' || line.startsWith('return')) {
          if (returnStack.length > 0) {
             const last = returnStack[returnStack.length - 1];
+            
+            if (line.startsWith('return')) {
+              const resMatch = line.match(/return\s+(.*)/);
+              if (resMatch && last.targetVar) {
+                 const returnValue = evaluateExpression(resMatch[1].replace(';', '').trim());
+                 // We need to update the variable in the PARENT frame
+                 setStack(prev => {
+                   const next = [...prev];
+                   if (next.length > 1) {
+                     const callingFrame = next[next.length - 2];
+                     const varName = last.targetVar!;
+                     const vIdx = callingFrame.variables.findIndex(v => v.name === varName);
+                     if (vIdx !== -1) {
+                        callingFrame.variables[vIdx] = { ...callingFrame.variables[vIdx], value: returnValue };
+                     } else {
+                        // If it doesn't exist, we added it to the calling frame when the call was made, 
+                        // but let's be safe and check globals too or just add it.
+                        callingFrame.variables.push({
+                           id: Math.random().toString(),
+                           name: varName,
+                           type: 'value',
+                           value: returnValue,
+                           address: `0x${(parseInt(callingFrame.id, 16) - callingFrame.variables.length * 4).toString(16).toUpperCase()}`,
+                           size: 4
+                        });
+                     }
+                   }
+                   return next;
+                 });
+              }
+            }
+            
             setReturnStack(prev => prev.slice(0, -1)); popFrame(); setCurrentLine(last.line + last.swallowed);
             logMessage(`RETURN: Popping stack frame. Returning to line ${last.line + last.swallowed + 1}.`); return;
          } else if (line === '}') { 
@@ -460,9 +494,9 @@ export function useCompiler(initialCode: string) {
         }
       }
 
-      if ((line.includes('int ') || line.includes('void ') || line.includes('char ')) && line.includes('(') && line.includes(';') && !line.includes('=')) { setCurrentLine(prev => prev + swallowed); return; }
+      if ((line.includes('int ') || line.includes('void ') || line.includes('char ') || line.includes('float ') || line.includes('double ')) && line.includes('(') && line.includes(';') && !line.includes('=')) { setCurrentLine(prev => prev + swallowed); return; }
 
-      if ((line.includes('int ') || line.includes('void ') || line.includes('char ')) && line.includes('(') && !line.includes(';') && !line.includes('=') && !lines[currentLine].includes('main(')) {
+      if ((line.includes('int ') || line.includes('void ') || line.includes('char ') || line.includes('float ') || line.includes('double ')) && line.includes('(') && !line.includes(';') && !line.includes('=') && !lines[currentLine].includes('main(')) {
          let depth = 0, skipTo = -1;
          for (let j = currentLine; j < lines.length; j++) {
             if (lines[j].includes('{')) depth++; if (lines[j].includes('}')) depth--;
@@ -506,14 +540,61 @@ export function useCompiler(initialCode: string) {
         if (line.startsWith('printf')) {
           const match = line.match(/printf\s*\(\s*"([^"]*)"\s*(?:,\s*(.*))?\s*\)/);
           if (match) {
-            let format = match[1], args = match[2] ? match[2].split(',').map(a => evaluateExpression(a.trim())) : [];
-            let output = format.replace(/%d|%u|%p/g, () => args.shift() || '0');
+            let format = match[1];
+            let argsStr = match[2] || "";
+            
+            let args: string[] = [];
+            let currentArg = "";
+            let depth = 0;
+            for (let char of argsStr) {
+               if (char === '(') depth++;
+               else if (char === ')') depth--;
+               if (char === ',' && depth === 0) {
+                 args.push(currentArg.trim());
+                 currentArg = "";
+               } else {
+                 currentArg += char;
+               }
+            }
+            if (currentArg.trim()) args.push(currentArg.trim());
+
+            const evaluatedArgs = args.map(a => evaluateExpression(a));
+            
+            let output = format.replace(/%d|%u|%p|%f|%s/g, (m) => {
+              const val = evaluatedArgs.shift();
+              if (val === undefined) return m;
+              
+              if (m === '%f') {
+                const num = parseFloat(val);
+                return isNaN(num) ? '0.000000' : num.toFixed(6);
+              }
+              return val;
+            });
             logMessage(`STDOUT: ${output.replace(/\\n/g, '')}`, 'output');
           }
         } else if (line.startsWith('scanf')) {
-          const match = line.match(/scanf\s*\(\s*"([^"]*)"\s*,\s*&(.*)\s*\)/);
+          const match = line.match(/scanf\s*\(\s*"([^"]*)"\s*,\s*(.*)\s*\)/);
           if (match) {
-            setInputTarget({ name: match[2].trim(), type: 'int' }); setIsAwaitingInput(true); setIsAutoStepping(false); return;
+            const formatStr = match[1];
+            let targetName = match[2].trim();
+            const type = formatStr.includes('%f') ? 'float' : 'int';
+            
+            if (targetName.startsWith('&')) {
+              targetName = targetName.substring(1).trim();
+            } else {
+              // If targetName is a pointer, we should update what it points to
+              const currentFrame = stack[stack.length - 1];
+              const v = (currentFrame?.variables.find(v => v.name === targetName)) || globals.find(g => g.name === targetName);
+              if (v && (v.type === 'pointer' || v.value.startsWith('0x'))) {
+                targetName = '*' + targetName;
+              }
+            }
+
+            setInputTarget({ name: targetName, type: type }); 
+            setWasAutoStepping(isAutoStepping);
+            setIsAwaitingInput(true); 
+            setIsAutoStepping(false); 
+            return;
           }
         } else if (line.includes('malloc')) {
           const mMatch = line.match(/(\w+)\s*=\s*(?:\(.*\))?malloc\s*\(([^)]+)\)/);
@@ -544,12 +625,47 @@ export function useCompiler(initialCode: string) {
       } else if (line.match(/^\w+\s*=|^\s*\*\w+\s*=|^\s*\w+->\w+\s*=/)) {
         const parts = line.split('=');
         const varName = parts[0].trim();
-        const value = evaluateExpression(parts[1].trim());
+        const rhs = parts[1].trim();
+        
+        // Check if RHS is a function call: area = calculateAreaOfCircle(radius)
+        const funcCallMatch = rhs.match(/^(\w+)\s*\((.*)\)$/);
+        if (funcCallMatch && !rhs.match(/^(malloc|free|scanf|printf)/)) {
+           const funcName = funcCallMatch[1], argsStr = funcCallMatch[2];
+           let funcLine = -1;
+           for (let j = 0; j < lines.length; j++) { if (lines[j].includes(`${funcName}(`) && !lines[j].includes(';') && j !== currentLine) { funcLine = j; break; } }
+           
+           if (funcLine !== -1) {
+              logMessage(`CALL: Evaluating '${funcName}' and assigning to '${varName}'.`);
+              setReturnStack(prev => [...prev, { line: currentLine, swallowed, targetVar: varName }]); pushFrame(funcName);
+              const paramsMatch = lines[funcLine].match(/\((.*)\)/);
+              if (paramsMatch) {
+                 const params = paramsMatch[1].split(',').map(p => p.trim().split(/\s+/).pop());
+                 const argVals = argsStr.split(',').map(a => evaluateExpression(a.trim()));
+                 setStack(prev => {
+                   const next = [...prev], frame = next[next.length - 1];
+                   params.forEach((p, idx) => {
+                     if (p) {
+                       const isPointerParam = p.startsWith('*'), cleanName = p.replace('*', '').trim();
+                       frame.variables.push({
+                         id: Math.random().toString(), name: cleanName || `param_${idx}`, type: isPointerParam ? 'pointer' : 'value',
+                         value: argVals[idx] || '0', address: `0x${(parseInt(frame.id, 16) - (idx + 1) * 4).toString(16).toUpperCase()}`,
+                         size: isPointerParam ? 8 : 4
+                       });
+                     }
+                   });
+                   return next;
+                 });
+              }
+              setCurrentLine(funcLine + 1); return;
+           }
+        }
+        
+        const value = evaluateExpression(rhs);
         updateOrAddVariable(varName, value);
-      } else if (line.startsWith('int ') || line.startsWith('char ') || line.startsWith('float ') || line.startsWith('struct ')) {
+      } else if (line.startsWith('int ') || line.startsWith('char ') || line.startsWith('float ') || line.startsWith('double ') || line.startsWith('struct ')) {
         const typeMatch = line.match(/^(int|char|float|double|struct\s+\w+)\s*(.*)/);
         if (typeMatch) {
-          const type = typeMatch[1], rest = typeMatch[2];
+          const type = typeMatch[1], rest = typeMatch[2].replace(/;$/, '').trim();
           rest.split(',').forEach(part => {
              const vMatch = part.trim().match(/^(\*?\w+)(?:\[(\d+)\])?(?:\s*=\s*(.*))?$/);
              if (vMatch) {
@@ -588,7 +704,13 @@ export function useCompiler(initialCode: string) {
     if (inputTarget && userInput) {
       updateOrAddVariable(inputTarget.name, userInput);
       logMessage(`STDIN: Received data for ${inputTarget.name} -> ${userInput}`);
-      setIsAwaitingInput(false); setUserInput(""); setInputTarget(null); setCurrentLine(prev => prev + absorbedLineCount());
+      setIsAwaitingInput(false); 
+      setUserInput(""); 
+      setInputTarget(null); 
+      setCurrentLine(prev => prev + absorbedLineCount());
+      if (wasAutoStepping) {
+        setIsAutoStepping(true);
+      }
     }
   };
 

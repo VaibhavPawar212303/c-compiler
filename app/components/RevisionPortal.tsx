@@ -7,7 +7,7 @@ import revisionPrograms from '../data/revision-programs.json';
 
 interface RevisionPortalProps {
   theme: 'dark' | 'light';
-  onSelectProgram: (code: string) => void;
+  onSelectProgram: (code: string, id: string) => void;
 }
 
 export default function RevisionPortal({ theme, onSelectProgram }: RevisionPortalProps) {
@@ -32,7 +32,7 @@ export default function RevisionPortal({ theme, onSelectProgram }: RevisionPorta
           {revisionPrograms.map((program) => (
             <button
               key={program.id}
-              onClick={() => onSelectProgram(program.code)}
+              onClick={() => onSelectProgram(program.code, program.id)}
               className={`group p-6 border text-left transition-all hover:scale-[1.02] active:scale-95 ${
                 theme === 'dark' 
                   ? 'bg-black/60 border-white/5 hover:border-amber-500/40 shadow-2xl' 

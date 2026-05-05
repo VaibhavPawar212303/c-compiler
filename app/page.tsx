@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { AnimatePresence } from 'motion/react';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import TopNavigation from './components/TopNavigation';
 import CompilerCore from './components/CompilerCore';
 // import DSAWorld from './components/DSAWorld';
@@ -32,13 +33,15 @@ int main() {
 
 const ENABLE_BETA = process.env.NEXT_PUBLIC_ENABLE_BETA_FEATURES === 'true';
 
-export default function MemoryArchitect() {
+function MemoryArchitectContent() {
   const [isMounted, setIsMounted] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [mainTab, setMainTab] = useState<'compiler' | 'dsa' | 'revision' | 'learning'>('compiler');
   const [compilerTab, setCompilerTab] = useState<'visualizer' | 'theory'>('visualizer');
-  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
-  const containerRef = React.useRef<HTMLDivElement>(null);
+  
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
 
   const {
     stack, heap, globals, code, setCode, currentLine, history, isAutoStepping, setIsAutoStepping,
@@ -46,41 +49,83 @@ export default function MemoryArchitect() {
     resetCompiler, logEndRef, freeHeap
   } = useCompiler(INITIAL_CODE);
 
+  // Sync state with local storage and URL
   useEffect(() => {
+    // 1. Sync theme from localStorage
+    const savedTheme = localStorage.getItem('kernel_trace_theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') {
+      setTheme(savedTheme as any);
+    }
+
+    // 2. Sync tab from URL
+    const tabFromUrl = searchParams.get('tab');
+    if (tabFromUrl && ['compiler', 'dsa', 'revision', 'learning'].includes(tabFromUrl)) {
+      setMainTab(tabFromUrl as any);
+    }
+
+    // 3. Sync code from URL (Revision) or localStorage
+    const revId = searchParams.get('rev');
+    if (revId) {
+      const program = revisionPrograms.find(p => p.id === revId);
+      if (program) {
+        setCode(program.code);
+      }
+    } else {
+      const savedCode = localStorage.getItem('kernel_trace_code');
+      if (savedCode) {
+        setCode(savedCode);
+      }
+    }
+
     setIsMounted(true);
-  }, []);
+  }, []); // Run only once on mount
+
+  // Persist code changes
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem('kernel_trace_code', code);
+    }
+  }, [code, isMounted]);
+
+  // Persist theme changes
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem('kernel_trace_theme', theme);
+    }
+  }, [theme, isMounted]);
+
+  // Update URL when tab changes
+  const handleTabChange = (newTab: 'compiler' | 'dsa' | 'revision' | 'learning') => {
+    setMainTab(newTab);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', newTab);
+    // If switching away from compiler, maybe keep the rev? Or clear it? 
+    // Usually switching tab should clear sub-params if not relevant
+    if (newTab !== 'compiler') params.delete('rev');
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
+  };
 
   // Ensure mainTab is valid if beta is disabled
   useEffect(() => {
-    // If BETA is disabled or we just want them hidden now as per request
     if (!ENABLE_BETA && (mainTab === 'dsa' || mainTab === 'learning')) {
-      setMainTab('compiler');
+      handleTabChange('compiler');
     }
   }, [mainTab, ENABLE_BETA]);
 
   if (!isMounted) return null;
 
-  const handleSelectProgram = (newCode: string) => {
+  const handleSelectProgram = (newCode: string, revId?: string) => {
     setCode(newCode);
-    setMainTab('compiler');
-    resetCompiler();
-  };
-
-  const handleDeployModule = (revisionId: string) => {
-    const program = revisionPrograms.find(p => p.id === revisionId);
-    if (program) {
-      setCode(program.code);
-    } else {
-      // Fallback to first program if ID not found
-      setCode(revisionPrograms[0].code);
-    }
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', 'compiler');
+    if (revId) params.set('rev', revId); else params.delete('rev');
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
     setMainTab('compiler');
     resetCompiler();
   };
 
   return (
     <main 
-      ref={containerRef}
       className={`min-h-screen flex flex-col font-sans transition-colors duration-500 overflow-hidden ${
       theme === 'dark' ? 'bg-[#070708] text-slate-300' : 'bg-[#EFEEEA] text-slate-800'
     }`}>
@@ -99,7 +144,7 @@ export default function MemoryArchitect() {
         theme={theme} 
         setTheme={setTheme} 
         mainTab={mainTab} 
-        setMainTab={setMainTab} 
+        setMainTab={handleTabChange} 
         enableBeta={ENABLE_BETA}
       />
 
@@ -149,5 +194,13 @@ export default function MemoryArchitect() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function MemoryArchitect() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-black flex items-center justify-center"><p className="text-white font-mono animate-pulse">Initializing System_</p></div>}>
+      <MemoryArchitectContent />
+    </Suspense>
   );
 }

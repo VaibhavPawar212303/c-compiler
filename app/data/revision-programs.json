@@ -6,6 +6,30 @@
     "code": "#include <stdio.h>\nint main(){\n  int a = 10;\n  int b = 20;\n  int sum = a+b;\n  printf(\"The addition of a and b is %d:\",sum);\n}\n"
   },
   {
+    "id": "rev-arithmetic-circle",
+    "title": "Circle Area & Perimeter",
+    "description": "Calculate area and perimeter of a circle using floating point numbers and user input.",
+    "code": "#include <stdio.h>\nint main(){\n  float radius;\n  float area,perimeter;\n // find the area and the perimeter of circle \n // area = 3.14 * r * r;\n // peri = 2 * 3.14 * r ;\n \n // enter the value of r \n printf(\"Enter the value of radius : \");\n scanf(\"%f\",&radius);\n // area of a circle \n printf(\"Radius of circle : %f\",radius);\n area = 3.14 * radius * radius;\n printf(\"Area of a circle is : %f\",area);\n \n // perimeter of a circle \n perimeter = 3.14 * 2 * radius;\n printf(\"Perimeter of circle is : %f\",perimeter);\n}\n"
+  },
+  {
+    "id": "rev-arithmetic-circle-func",
+    "title": "Circle Area & Perimeter (Functions)",
+    "description": "Calculate area and perimeter of a circle using custom functions and user input.",
+    "code": "#include <stdio.h>\n\nfloat calculateAreaOfCircle(int r){\n float a = 3.14 * r * r;\n return a;\n}\n\nfloat calculatePerimeterOfCircle(int r){\n float p = 3.14 * 2 * r;\n return p;\n}\n\nint main(){\n  float radius;\n  float area,perimeter;\n // find the area and the perimeter of circle \n // area = 3.14 * r * r;\n // peri = 2 * 3.14 * r ;\n \n // enter the value of r \n printf(\"Enter the value of radius : \");\n scanf(\"%f\",&radius);\n // area of a circle \n printf(\"Radius of circle : %f\\n\",radius);\n area = calculateAreaOfCircle(radius);\n printf(\"Area of a circle is : %f\\n\",area);\n \n // perimeter of a circle \n perimeter= calculatePerimeterOfCircle(radius);\n printf(\"Perimeter of circle is : %f\",perimeter);\n}\n"
+  },
+  {
+    "id": "rev-arithmetic-circle-ptr",
+    "title": "Circle Area & Perimeter (Pointers)",
+    "description": "Calculate area and perimeter of a circle using pointers to return multiple values from a function.",
+    "code": "#include <stdio.h>\n\nfloat calculateAreaPeriOfCircle(int r, float *area, float *perimeter){\n *area = 3.14 * r *r;\n *perimeter = 3.14 *2 * r;\n}\n\nint main(){\n  float radius;\n  float area,perimeter;\n // find the area and the perimeter of circle \n // area = 3.14 * r * r;\n // peri = 2 * 3.14 * r ;\n \n // enter the value of r \n printf(\"Enter the value of radius : \");\n scanf(\"%f\",&radius);\n calculateAreaPeriOfCircle(radius,&area,&perimeter);\n // area of a circle \n printf(\"Radius of circle : %f\\n\",radius);\n printf(\"Area of a circle is : %f\\n\",area);\n // perimeter of a circle \n printf(\"Perimeter of circle is : %f\",perimeter);\n}\n"
+  },
+  {
+    "id": "rev-arithmetic-circle-ptr-full",
+    "title": "Circle Area & Perimeter (Full Pointers)",
+    "description": "Comprehensive pointer usage: passing addresses for all parameters including the radius.",
+    "code": "#include <stdio.h>\n\nfloat calculateAreaPeriOfCircle(float *r, float *area, float *perimeter){\n *area = 3.14 *(*r) * (*r);\n *perimeter = 3.14 *2 * (*r);\n}\n\nint main(){\n  float radius;\n  float area,perimeter;\n // find the area and the perimeter of circle \n // area = 3.14 * r * r;\n // peri = 2 * 3.14 * r ;\n \n // enter the value of r \n printf(\"Enter the value of radius : \");\n scanf(\"%f\",&radius);\n calculateAreaPeriOfCircle(&radius,&area,&perimeter);\n // area of a circle \n printf(\"Radius of circle : %f\\n\",radius);\n printf(\"Area of a circle is : %f\\n\",area);\n // perimeter of a circle \n printf(\"Perimeter of circle is : %f\",perimeter);\n}\n"
+  },
+  {
     "id": "rev-number-temp",
     "title": "Reverse Number (Temp Variable)",
     "description": "Reverse digits of a number using a temporary variable and modulo operator.",
