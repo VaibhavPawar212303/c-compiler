@@ -1,0 +1,32 @@
+[
+  {
+    "id": "rev-arithmetic",
+    "title": "Arithmetic Operations",
+    "description": "Basic addition of two integers and storing the result in a sum variable.",
+    "code": "#include <stdio.h>\nint main(){\n  int a = 10;\n  int b = 20;\n  int sum = a+b;\n  printf(\"The addition of a and b is %d:\",sum);\n}\n"
+  },
+  {
+    "id": "rev-number-temp",
+    "title": "Reverse Number (Temp Variable)",
+    "description": "Reverse digits of a number using a temporary variable and modulo operator.",
+    "code": "#include <stdio.h>\n\nint main() {\n    int n = 1234;\n    int reverse = 0;\n    int temp;\n    \n    printf(\"Original number: %d\\n\", n);\n    \n    while(n != 0) {\n        temp = n % 10;\n        reverse = reverse * 10 + temp;\n        n = n / 10;\n    }\n    \n    printf(\"Reversed number: %d\\n\", reverse);\n    return 0;\n}\n"
+  },
+  {
+    "id": "rev-number-pointer",
+    "title": "Reverse Number (Pointers)",
+    "description": "Use a pointer to modify the original number and reverse its digits.",
+    "code": "#include <stdio.h>\n\nvoid reverseNum(int *n) {\n    int rev = 0;\n    int val = *n;\n    while(val != 0) {\n        rev = rev * 10 + (val % 10);\n        val = val / 10;\n    }\n    *n = rev;\n}\n\nint main() {\n    int num = 5678;\n    printf(\"Before reverse: %d\\n\", num);\n    \n    reverseNum(&num);\n    \n    printf(\"After reverse: %d\\n\", num);\n    return 0;\n}\n"
+  },
+  {
+    "id": "swap-no-pointer",
+    "title": "Swap Numbers (No Pointers)",
+    "description": "Demonstrates Call-by-Value where values are swapped inside the function but the original variables remain unchanged.",
+    "code": "#include <stdio.h>\n\nvoid swap(int x, int y) {\n    int temp;\n    printf(\"Inside swap function (before): x=%d, y=%d\\n\", x, y);\n    temp = x;\n    x = y;\n    y = temp;\n    printf(\"Inside swap function (after): x=%d, y=%d\\n\", x, y);\n}\n\nint main() {\n    int a = 10;\n    int b = 20;\n    printf(\"Before swap: a=%d, b=%d\\n\", a, b);\n    \n    swap(a, b);\n    \n    printf(\"After swap in main: a=%d, b=%d (Values did not change!)\\n\", a, b);\n    return 0;\n}\n"
+  },
+  {
+    "id": "swap-pointers",
+    "title": "Swap Numbers (Using Pointers)",
+    "description": "Demonstrates Call-by-Reference where pointers are used to directly modify the memory of the original variables.",
+    "code": "#include <stdio.h>\n\nvoid swap(int *x, int *y) {\n    int temp;\n    printf(\"Swapping values at addresses %p and %p\\n\", x, y);\n    temp = *x;\n    *x = *y;\n    *y = temp;\n}\n\nint main() {\n    int a = 10;\n    int b = 20;\n    printf(\"Before swap: a=%d, b=%d\\n\", a, b);\n    \n    swap(&a, &b);\n    \n    printf(\"After swap: a=%d, b=%d (Successfully swapped!)\\n\", a, b);\n    return 0;\n}\n"
+  }
+]

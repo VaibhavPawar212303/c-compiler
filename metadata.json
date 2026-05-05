@@ -1,6 +1,6 @@
 {
-  "name": "DSA World: Interactive Stack",
-  "description": "An interactive data structure visualizer focused on the Stack (LIFO) model, featuring animated push, pop, and peek operations.",
+  "name": "C Memory Architect",
+  "description": "A high-tech interactive debugger for C memory management, visualizing the Stack, Heap, and Data Segment in real-time.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

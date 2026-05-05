@@ -1,0 +1,60 @@
+{
+  "chapters": [
+    {
+      "id": 1,
+      "title": "Foundations",
+      "fullTitle": "Foundations & Data Types",
+      "icon": "Cpu",
+      "desc": "Variables, Data Types, and Operators",
+      "framework": "C is a typed language. Every piece of data must have a type that tells the compiler how much memory to allocate: 'int' gets 4 bytes, 'double' gets 8 bytes.",
+      "codeSnippet": "int age = 25;\nfloat price = 19.99;\nchar initial = 'A';",
+      "relatedRevisionId": "rev-arithmetic"
+    },
+    {
+      "id": 2,
+      "title": "Control Flow",
+      "fullTitle": "Advanced Control Flow",
+      "icon": "Workflow",
+      "desc": "Conditionals and Loops",
+      "framework": "Execution flow is governed by logic gates like if/else and loops. These determine which instructions the CPU processes next based on register comparisons.",
+      "codeSnippet": "if (x > 0) {\n  while (x--) printf(\"%d\", x);\n}",
+      "relatedRevisionId": "rev-number-temp"
+    },
+    {
+      "id": 3,
+      "title": "Memory & Pointers",
+      "fullTitle": "The Magic of Pointers",
+      "icon": "Database",
+      "desc": "Addresses, Dereferencing, and Pointers",
+      "framework": "A pointer is simply a variable that stores a memory address. Think of it as a remote control that cannot do anything itself but tells you where the real TV is located.",
+      "codeSnippet": "int x = 10;\nint *p = &x; // p stores address of x\n*p = 20;    // changes x to 20",
+      "relatedRevisionId": "swap-pointers"
+    },
+    {
+      "id": 4,
+      "title": "Function Logic",
+      "fullTitle": "Recursive Function Logic",
+      "icon": "Tv",
+      "desc": "Scope, Call-by-Value, and Call-by-Reference",
+      "framework": "Functions create local stack frames. Recursive calls stack these frames atop each other until a base case is hit, then they unwind in LIFO order.",
+      "codeSnippet": "int fact(int n) {\n  if (n <= 1) return 1;\n  return n * fact(n-1);\n}",
+      "relatedRevisionId": "swap-no-pointer"
+    },
+    {
+      "id": 5,
+      "title": "Dynamic Allocation",
+      "fullTitle": "Heap Memory Architecture",
+      "icon": "Zap",
+      "desc": "Malloc, Free, and Heap Management",
+      "framework": "Heap memory is persistent until freed. Unlike the stack, which cleans up after a function finishes, heap memory stays reserved as long as you need it.",
+      "codeSnippet": "int *arr = (int*)malloc(5 * sizeof(int));\nif (arr != NULL) {\n  arr[0] = 100;\n  free(arr);\n}",
+      "relatedRevisionId": "rev-number-pointer"
+    }
+  ],
+  "mechanics": [
+    "Allocation of segment space",
+    "Pointer arithmetic and offsets",
+    "Symbol table resolution",
+    "Register level optimization"
+  ]
+}

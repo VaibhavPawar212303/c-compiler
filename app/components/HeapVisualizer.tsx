@@ -13,128 +13,82 @@ interface HeapVisualizerProps {
 
 const HeapVisualizer = ({ heap, freeHeap, theme = 'dark' }: HeapVisualizerProps) => {
   return (
-    <div className="relative flex flex-col group min-h-[750px]">
-      <div className={`absolute -top-10 -right-10 w-40 h-40 rounded-full blur-3xl pointer-events-none opacity-20 ${
-        theme === 'dark' ? 'bg-emerald-600/30' : 'bg-emerald-400/20'
-      }`} />
-
-      {/* Visual Header */}
-      <div className="flex items-center justify-between mb-4 relative z-10">
-        <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-none border ${
-            theme === 'dark' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-emerald-600/10 border-emerald-600/20 text-emerald-600'
-          }`}>
-            <Database size={18} />
-          </div>
-          <div>
-             <h3 className={`text-sm font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>The_Heap</h3>
-             <p className="text-[9px] font-mono opacity-50 uppercase tracking-widest">Manual Segment Management</p>
-          </div>
-        </div>
-        <div className={`px-3 py-1 rounded-none border text-[9px] font-black uppercase tracking-widest ${
-          theme === 'dark' ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/5' : 'border-emerald-600/20 text-emerald-600 bg-emerald-600/5'
-        }`}>
-          Runtime_Storage
-        </div>
-      </div>
-
-      <div className={`border rounded-none flex flex-col overflow-hidden backdrop-blur-md flex-1 shadow-2xl relative transition-all ${
-        theme === 'dark' ? 'bg-white/[0.02] border-white/10' : 'bg-white border-black/10'
+    <div className="relative flex flex-col group">
+      <div className={`border rounded-2xl flex flex-col overflow-hidden backdrop-blur-md flex-1 relative transition-all ${
+        theme === 'dark' ? 'bg-black/20 border-white/5' : 'bg-white border-black/5'
       }`}>
-        <div className="flex-1 p-8 overflow-y-auto custom-scrollbar relative z-10">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Memory Decoration */}
+        <div className={`absolute left-0 top-0 bottom-0 w-1 ${
+          theme === 'dark' ? 'bg-emerald-500/20' : 'bg-emerald-600/20'
+        }`} />
+
+        <div className="flex-1 p-6 flex flex-col gap-6 relative z-10 overflow-y-auto custom-scrollbar min-h-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <AnimatePresence>
               {heap.map((obj) => (
                 <motion.div
                   key={obj.id}
-                  initial={{ scale: 0.8, opacity: 0 }}
+                  initial={{ scale: 0.95, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 1.1, opacity: 0, filter: 'brightness(2)' }}
-                  className={`relative group h-auto min-h-[160px] rounded-none border flex flex-col overflow-hidden shadow-lg transition-all hover:shadow-[0_10px_40px_rgba(0,0,0,0.2)] ${
-                    theme === 'dark' ? 'bg-black/40 border-white/5' : 'bg-white border-black/5'
+                  exit={{ scale: 1.05, opacity: 0 }}
+                  className={`relative rounded-xl border flex flex-col overflow-hidden transition-all shadow-sm hover:shadow-md ${
+                    theme === 'dark' ? 'bg-black/40 border-white/10' : 'bg-white border-black/10'
                   }`}
-                  style={{ borderLeft: `4px solid ${obj.color}` }}
+                  style={{ borderLeft: `3px solid ${obj.color}` }}
                 >
-                  <div className={`p-4 border-b flex items-center justify-between ${
-                    theme === 'dark' ? 'border-white/5 bg-black/40' : 'border-black/5 bg-slate-50 border-t'
+                  <div className={`px-4 py-2 flex items-center justify-between border-b ${
+                    theme === 'dark' ? 'border-white/5 bg-white/[0.02]' : 'border-black/5 bg-slate-50'
                   }`}>
-                    <div className="flex items-center gap-4">
-                       <div className="w-8 h-8 flex items-center justify-center border border-white/10 bg-black/20" style={{ color: obj.color }}>
-                          <Database size={14} />
-                       </div>
-                       <div>
-                          <h4 className={`text-[10px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
-                            {obj.name}
-                          </h4>
-                          <span className="text-[8px] font-mono opacity-30 block">ID: {obj.id}</span>
-                       </div>
+                    <div className="flex items-center gap-2">
+                       <Database size={12} style={{ color: obj.color }} />
+                       <h4 className={`text-[9px] font-black uppercase tracking-widest ${theme === 'dark' ? 'text-white/80' : 'text-slate-900/80'}`}>
+                         {obj.name}
+                       </h4>
                     </div>
-                    <div className="flex flex-col items-end">
-                       <span 
-                         id={`p-addr-${obj.address.toUpperCase()}`}
-                         className="text-[9px] font-mono opacity-50 tabular-nums"
-                       >
-                         0x{obj.address.toUpperCase()}
-                       </span>
-                       <button 
-                         onClick={() => freeHeap(obj.id)}
-                         className={`mt-1 text-[8px] font-black uppercase tracking-tighter transition-all px-1.5 py-0.5 border ${
-                           theme === 'dark' ? 'border-red-500/20 text-red-500/60 hover:text-red-500 hover:bg-red-500/10' : 'border-red-600/20 text-red-600/60 hover:text-red-600 hover:bg-red-600/10'
-                         }`}
-                       >
-                         release();
-                       </button>
-                    </div>
+                    <span className="text-[8px] font-mono opacity-30 tabular-nums">0x{obj.address.toUpperCase()}</span>
                   </div>
                   
-                  <div className="flex-1 p-6 flex flex-col gap-6">
-                    <div className={`p-5 min-h-[80px] transition-all relative ${
-                      theme === 'dark' ? 'bg-black/40 border border-white/5 shadow-inner' : 'bg-slate-50 border border-black/5'
+                  <div className="p-4 space-y-4">
+                    <div className={`p-3 rounded-lg min-h-[60px] ${
+                      theme === 'dark' ? 'bg-[#050505] border border-white/5 shadow-inner' : 'bg-slate-50 border border-black/5 shadow-inner'
                     }`}>
                       {obj.value && obj.value.startsWith('{') ? (
-                        <div className="max-h-60 overflow-y-auto custom-scrollbar pr-3">
+                        <div className="max-h-40 overflow-y-auto custom-scrollbar">
                           {renderHierarchy(obj.value, obj.address, theme)}
                         </div>
                       ) : (
-                        <div className="flex items-center justify-between h-full">
-                          <span className="text-[10px] font-mono opacity-20 uppercase tracking-widest italic">_raw_segment_</span>
-                          <span className={`text-sm font-mono font-black ${
-                             theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'
-                          }`}>
-                            {obj.value || '0x00'}
-                          </span>
+                        <div className="flex items-center justify-between h-full opacity-60">
+                          <span className="text-[11px] font-mono font-bold" style={{ color: obj.color }}>{obj.value || '0x00'}</span>
                         </div>
                       )}
                     </div>
 
-                    <div className="space-y-2">
-                       <div className="flex items-center justify-between px-1">
-                          <span className="text-[9px] font-mono opacity-40 uppercase tracking-widest font-bold">Allocation_Pressure</span>
-                          <span className="text-[9px] font-mono font-black">{obj.size} Bytes</span>
-                       </div>
-                       <div className={`h-1.5 rounded-none overflow-hidden ${theme === 'dark' ? 'bg-white/5' : 'bg-black/5'}`}>
-                         <motion.div 
-                           initial={{ width: 0 }}
-                           animate={{ width: `${Math.min((obj.size / 32) * 100, 100)}%` }} // Normalized to 32B for viz
-                           className="h-full rounded-none transition-all shadow-[0_0_10px_rgba(16,185,129,0.2)]"
-                           style={{ backgroundColor: obj.color }}
-                         />
-                       </div>
+                    <div className="flex items-center justify-between px-1">
+                      <div className="flex-1 max-w-[120px] h-1 bg-black/20 rounded-full overflow-hidden">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.min((obj.size / 64) * 100, 100)}%` }}
+                          className="h-full rounded-full"
+                          style={{ backgroundColor: obj.color }}
+                        />
+                      </div>
+                      <button 
+                        onClick={() => freeHeap(obj.id)}
+                        className={`text-[8px] font-black uppercase tracking-tighter px-2 py-1 rounded transition-colors border ${
+                          theme === 'dark' ? 'border-red-500/20 text-red-500/80 hover:bg-red-500 hover:text-white' : 'border-red-600/20 text-red-600/80 hover:bg-red-600 hover:text-white'
+                        }`}
+                      >
+                        free()
+                      </button>
                     </div>
-                  </div>
-
-                  <div className={`p-2 text-center border-t text-[8px] font-bold uppercase tracking-[0.2em] ${
-                    theme === 'dark' ? 'bg-black/40 border-white/5 text-slate-700' : 'bg-slate-50 border-black/5 text-slate-300'
-                  }`}>
-                    {obj.type}_Segment_Active
                   </div>
                 </motion.div>
               ))}
             </AnimatePresence>
             {heap.length === 0 && (
-              <div className="col-span-1 md:col-span-2 h-full flex flex-col items-center justify-center py-24 opacity-20 grayscale">
-                <Database size={64} className="mb-4 text-slate-400" />
-                <p className="text-[10px] font-black uppercase tracking-[0.5em] text-slate-400">Heap_Empty_Buffer</p>
+              <div className="col-span-1 md:col-span-2 py-12 flex flex-col items-center justify-center opacity-10">
+                <Database size={32} className="mb-2" />
+                <p className="text-[8px] font-black uppercase tracking-[0.4em]">Heap_Pool_Available</p>
               </div>
             )}
           </div>
@@ -143,6 +97,7 @@ const HeapVisualizer = ({ heap, freeHeap, theme = 'dark' }: HeapVisualizerProps)
     </div>
   );
 };
+
 
 interface TreeNode {
   key: string;
